@@ -2,7 +2,6 @@
 
 MSEclipse is a library that finds corresponding features in same-method LC-MS datasets. It accomplishes this by breaking the whole alignment own into individual directed subalignments, loading the results into a graph, then deconvoluting this graph to produce a results table.
 
-This documentation is in the early phases, so it might be lacking a few key features. Feel free to reach out.
 ## Quick use
 1. Install with `pip install bmxp` (requires Python 3)
 2. Get two (or more!) datasets with the columns `Compound_ID`, `RT`, `MZ`, `Intensity` (provided in `/tests`).

@@ -6,4 +6,3 @@ a.align()
 file = open("mseclipse.pickle", "wb")
 pickle.dump(a, file)
 file.close()
-
