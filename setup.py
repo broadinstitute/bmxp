@@ -14,7 +14,7 @@ with open(os.path.join(HERE, "requirements.txt"), encoding="utf-8") as f:
 setup(
     name="bmxp",
     install_requires=REQUIREMENTS.split("\n"),
-    version="0.0.2",
+    version="0.0.3",
     description="A package to perform calculations and match between "
     "nontargeted LCMS Datasets",
     packages=find_namespace_packages(include=["bmxp.*"]),

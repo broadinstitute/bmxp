@@ -22,7 +22,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 
 def dataset_loops(attr=None):
@@ -101,6 +101,10 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
             "MZ": {"upper": 15, "lower": -15},
             "Intensity": {"upper": 2, "lower": -2},
         }
+        self.default_scaler_params = {
+            "smoothing_method": "lowess",
+            "smoothing_params": {"frac": 0.1},
+        }
         self.feature_name = "Compound_ID"
         self.anchor_priority = "Intensity"
         self.datasets = collections.OrderedDict()
@@ -113,6 +117,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         self.cutoffs = {}
         self.weights = {}
         self.coarse_params = {}
+        self.scaler_params = {}
         self.multipliers = {}
         self.graph = nx.DiGraph()
         self.remove_all = True
@@ -202,10 +207,12 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                 self.default_weights.update(item)
             elif key.lower() == "coarse_params":
                 self.default_coarse_params.update(item)
+            elif key.lower() == "scaler_params":
+                self.default_scaler_params.update(item)
             else:
                 raise KeyError(
                     f"Unknown value: {key}. Acceptable values are 'cutoffs', 'weights',"
-                    " and 'coarse_params'."
+                    " 'coarse_params', and 'scaler_params'."
                 )
 
     def set_params(self, params, rec=True):
@@ -227,17 +234,19 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                 self.set_weights(item, rec)
             elif key.lower() == "coarse_params":
                 self.set_coarse_params(item, rec)
+            elif key.lower() == "scaler_params":
+                self.set_scaler_params(item, rec)
             else:
                 raise KeyError(
-                    f"Unknown value: {key}. Acceptable values are 'cutoffs', 'weights',"
-                    " and 'coarse_params'."
+                    f"Unknown value: {key}. Acceptable values are 'scalers', "
+                    "'cutoffs', 'weights', 'coarse_params', and 'scaler_params'."
                 )
 
     def set_scalers(self, scalers, rec=True):
         """
-        Function to set custom scalers. 
+        Function to set custom scalers.
          If rec is true, will calculate the reciprocal scalers
-         scalers is a nested dict with the dataframe names 
+         scalers is a nested dict with the dataframe names
          and scalers to be used. For example:
         {
             'DS1': {
@@ -248,7 +257,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                 }
             }
         }
-        While it seems clunky, it allows us to set multiple scalers at once. 
+        While it seems clunky, it allows us to set multiple scalers at once.
          If rec is True, and recipricol scalers are specified, they will be overwritten.
         :param scalers: dict
         :param rec: bool
@@ -286,7 +295,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
 
     def _set_scalers(self, scalers, ds1, ds2, rec):
         """
-        Takes a list of scalers in a dictionary form 
+        Takes a list of scalers in a dictionary form
          and sets them as scalers in the object.
         For example:
         {
@@ -296,7 +305,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         }
         Scalers should already be in their proper space
 
-        :param scalers: Dict(str: Dict(str:list), 
+        :param scalers: Dict(str: Dict(str:list),
          containing the scaler names as Keys and values
         :param ds1: str, name of Source dataset
         :param ds2: str, name of Target dataset
@@ -354,8 +363,9 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                 # Check for typos in cutoff names
                 if not set(cutoffs[ds1][ds2].keys()).issubset(set(self.descriptors)):
                     raise IndexError(
-                        f"The only acceptable columns for cutoffs are {self.descriptors.keys()}, and"
-                        f" . You provided {cutoffs.keys()}."
+                        "The only acceptable columns for cutoffs are "
+                        f"{self.descriptors.keys()}. You provided "
+                        f"{cutoffs[ds1][ds2].keys()}."
                     )
 
                 # replace 0's with inf, negating their use in cutoffs
@@ -404,8 +414,9 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                 # Check for typos in weight names
                 if not set(weights[ds1][ds2].keys()).issubset(set(self.descriptors)):
                     raise IndexError(
-                        f"The only acceptable columns for weights are "
-                        f"{self.descriptors.keys()}.  You provided {weights.keys()}."
+                        "The only acceptable columns for weights are "
+                        f"{self.descriptors.keys()}.  You provided "
+                        f"{weights[ds1][ds2].keys()}."
                     )
 
                 self.weights[ds1][ds2].update(weights[ds1][ds2])
@@ -454,7 +465,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                     raise IndexError(
                         f"The only acceptable columns for coarse_params are"
                         f" {set(key for key in self.descriptors)}. You"
-                        f" provided {coarse_params.keys()}."
+                        f" provided {coarse_params[ds1][ds2].keys()}."
                     )
 
                 self.coarse_params[ds1][ds2].update(coarse_params[ds1][ds2])
@@ -477,6 +488,46 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                     if ds1 not in self.coarse_params[ds2]:
                         self.coarse_params[ds2][ds1] = {}
                     self.coarse_params[ds2][ds1].update(rec_dict)
+
+    def set_scaler_params(self, scaler_params, rec=True):
+        """
+        Function to set custom smoothing params for scaler generation. If rec is true,
+        apply reciprocal params
+        {
+            'DS1': {
+                'DS2':{
+                    'smoothing_method': 'lowess',
+                    'smoothing_params': {
+                        'frac': 0.9
+                    }
+                }
+            }
+        }
+        :param scaler_params: dict
+        :param rec: bool
+        """
+        scaler_params = scaler_params.copy()
+        for ds1 in scaler_params:
+            # make scaler_params dicts if they don't exist
+            if ds1 not in self.scaler_params:
+                self.scaler_params[ds1] = {}
+            for ds2 in scaler_params[ds1]:
+                if ds2 not in self.scaler_params[ds1]:
+                    self.scaler_params[ds1][ds2] = {}
+
+                # Check if dataframes are in the aligner object
+                if ds1 not in self.datasets or ds2 not in self.datasets:
+                    raise IndexError(
+                        f"Either {ds1} or {ds2} was not found in the datasets."
+                    )
+
+                self.scaler_params[ds1][ds2].update(scaler_params[ds1][ds2])
+                if rec:
+                    if ds2 not in self.scaler_params:
+                        self.scaler_params[ds2] = {}
+                    if ds1 not in self.scaler_params[ds2]:
+                        self.scaler_params[ds2][ds1] = {}
+                    self.scaler_params[ds2][ds1].update(scaler_params[ds1][ds2])
 
     def to_csv(self, *args, filepath=None, union_only=True, to_bytes=False):
         """
@@ -632,6 +683,11 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         These autogenerated scalers will not overwrite scalers already in place.
         """
         LOGGER.info(f"Generating scalers for {ds1} -> {ds2}...")
+        scaler_params = self.default_scaler_params.copy()
+        try:
+            scaler_params.update(self.scaler_params[ds1][ds2])
+        except KeyError:
+            pass
         coarse_match = self.coarse_matches[ds1][ds2]
         ds1_matches = self.datasets[ds1].loc[coarse_match[ds1], :]
         ds2_matches = self.datasets[ds2].loc[coarse_match[ds2], :]
@@ -644,8 +700,9 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                 scaled = calc_scalers(
                     ds1_matches[descr].values,
                     ds2_matches[descr].values,
-                    smoothing="lowess",
+                    smoothing=scaler_params["smoothing_method"],
                     mode=mode,
+                    **scaler_params["smoothing_params"],
                 )
                 scalers[descr] = zip(*scaled)
         self._set_scalers(scalers, ds1, ds2, rec=False)
