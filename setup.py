@@ -14,16 +14,16 @@ with open(os.path.join(HERE, "requirements.txt"), encoding="utf-8") as f:
 setup(
     name="bmxp",
     install_requires=REQUIREMENTS.split("\n"),
-    version="0.0.3",
-    description="A package to perform calculations and match between "
-    "nontargeted LCMS Datasets",
+    version="0.0.4",
+    description="LCMS Processing tools used by the Metabolomics Platform at the Broad"
+    " Institute.",
     packages=find_namespace_packages(include=["bmxp.*"]),
     license="MIT",
     author="Daniel S. Hitchcock",
     author_email="daniel.s.hitchcock@gmail.com",
     long_description_content_type="text/markdown",
     long_description=LONG_DESCRIPTION,
-    keywords=["LCMS", "Alignment", "Processing", "Metabolomics"],
+    keywords=["LCMS", "Alignment", "Processing", "Metabolomics", "Clustering"],
     classifiers=[
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
