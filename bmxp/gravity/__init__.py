@@ -1,20 +1,193 @@
 """
 Gravity clusters LCMS datasets by RT and Correlation
+
+
+NaN Policy - Zeroes, Drop, Fill(spearman)
+
+Method, NaN
+
+Options:
+Spearman - Fill NaNs with Zeroes (Fill in Python, call by_corr with ties=whatever)
+Spearman - Drop NaNs (Don't fill, call by_rt with Ties=whatever)
+Spearman - Backfill NaNs (Don't fill, call "backfill")
+
+Pearson - Fill NaNs with Zeroes (Fill in Python, call by_corr)
+Pearson - Drop NaNs (Don't fill, call by_rt)
+
+
 """
+
+
 import logging
 import math
 import pandas as pd
 import networkx as nx
+from ctypes import CDLL, c_double, c_int32, c_void_p
+import os
+import platform
+import numpy as np
+
+dir_path = os.path.dirname(os.path.realpath(__file__))
+if platform.system() == "Windows":
+    correlation = CDLL(os.path.join(dir_path, "correlation.dll"))
+else:
+    correlation = CDLL(os.path.join(dir_path, "correlation.so"))
+
+c_array = np.ctypeslib.ndpointer(dtype=np.float64, flags="C_CONTIGUOUS")
+int32_array = np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS")
+
+correlation.free_p.argtypes = [c_void_p]
+
+correlation.pearson_array.argtypes = [
+    c_array,
+    c_int32,
+    c_int32,
+    c_int32,
+]
+correlation.pearson_array.restype = c_double
+
+correlation.spearman_array.argtypes = [c_array, c_int32, c_int32, c_int32, c_int32]
+correlation.spearman_array.restype = c_double
+
+correlation.pearson.argtypes = [c_array, c_array, c_int32]
+correlation.pearson.restype = c_double
+
+correlation.spearman.argtypes = [c_array, c_array, c_int32, c_int32]
+correlation.spearman.restype = c_double
 
 logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
+__version__ = "0.0.5"
+ECLIPSE_COLUMNS = [
+    "RT",
+    "MZ",
+    "Intensity",
+    "Non_Quant",
+    "Compound_ID",
+    "Adduct",
+    "Annotation_ID",
+    "Metabolite",
+    "Cluster_Num",
+    "Cluster_Size",
+]
 
-__version__ = "0.0.1"
+
+def free_p(p):
+    correlation.free_p(p)
 
 
-def cluster(df, rt_thresh=0.02, corr_value=0.8, batch_size=1000, method="Spearman"):
+def pearson_array(arr1, r1_start, r2_start):
+    r_p = correlation.pearson_array(arr1, r1_start, r2_start, len(arr1[0]),)
+    return r_p
+
+
+def spearman_array(arr1, r1_start, r2_start, nan_policy="fill"):
+    drop_nan = nan_policy != "fill"
+    r_p = correlation.spearman_array(arr1, r1_start, r2_start, len(arr1[0]), drop_nan)
+    return r_p
+
+
+def pearson(x, y):
+    x = np.array(x).astype(np.float64)
+    y = np.array(y).astype(np.float64)
+    return correlation.pearson(x, y, len(x))
+
+
+def spearman(x, y, nan_policy="fill"):
+    x = np.array(x).astype(np.float64)
+    y = np.array(y).astype(np.float64)
+    drop_nan = nan_policy != "fill"
+    return correlation.spearman(x, y, len(x), drop_nan)
+
+
+def deconvolute(df_index, graph):
+    cluster_df = pd.DataFrame({"Cluster_Num": None, "Cluster_Size": 1}, index=df_index)
+    i = 0
+    while True:
+        # delete singletons
+        graph.remove_nodes_from(list(nx.isolates(graph)))
+
+        # build list of cliques of the largest size
+        cliques = []
+        max_size = 0
+        for clique in nx.find_cliques(graph):
+            if len(clique) > max_size:
+                max_size = len(clique)
+                cliques = [[set(clique), 0]]
+            elif len(clique) == max_size:
+                cliques.append([set(clique), 0])
+        if not cliques:
+            break
+        # calculate correlation of largest cliques
+        for clique in cliques:
+            clique_graph = graph.subgraph(clique[0])
+            temp = 0
+            for edge in clique_graph.edges(data=True):
+                temp += edge[2]["coor"]
+            clique[1] = temp
+
+        # sort by best corr
+        cliques.sort(key=lambda x: x[1], reverse=True)
+        to_remove = set()
+        while len(cliques) > 0:
+            # add the best one
+            best_clique = cliques[0]
+            features = list(best_clique[0])
+            cluster_df.loc[features, "Cluster_Num"] = i
+            cluster_df.loc[features, "Cluster_Size"] = max_size
+            if i % 50 == 0:
+                LOGGER.info(f"On cluster {i}, which contains {max_size} features.")
+            i += 1
+
+            # search the clique for ones to remove
+            cliques = [
+                clique
+                for clique in cliques
+                if not clique[0].intersection(best_clique[0])
+            ]
+            # add to our "to remove" queue
+            to_remove.update(best_clique[0])
+        graph.remove_nodes_from(to_remove)
+        if max_size == 2:
+            break
+    return cluster_df
+
+
+def corr_array(i, j, rt_series, df, corr_value, rt_thresh, method, nan_policy):
+
+    # long winded way to find RT differences and the indices
+    # similar to pd.stack
+    np_batch_a = rt_series.iloc[i[0] : i[1]].values
+    np_batch_b = rt_series.iloc[j[0] : j[1]].values
+    rt_flattened = np.absolute(np.subtract.outer(np_batch_b, np_batch_a)).flatten()
+    a_index = np.tile(np.fromiter(range(i[0], i[1]), int), (j[1] - j[0]))
+    b_index = np.tile(np.fromiter(range(j[0], j[1]), int), ((i[1] - i[0]), 1)).flatten(
+        order="F"
+    )
+    to_keep = (rt_flattened < rt_thresh) & (a_index != b_index)
+    a_index = a_index[to_keep]
+    b_index = b_index[to_keep]
+    corr_results = np.empty(len(a_index))
+    for k, a_val in enumerate(a_index):
+        b_val = b_index[k]
+        if method == "spearman":
+            corr_results[k] = spearman_array(df, a_val, b_val, nan_policy)
+        else:
+            corr_results[k] = pearson_array(df, a_val, b_val)
+    to_return = corr_results > corr_value
+    return a_index[to_return], b_index[to_return], corr_results[to_return]
+
+
+def cluster(
+    df,
+    rt_thresh=0.02,
+    corr_value=0.8,
+    batch_size=1000,
+    method="spearman",
+    nan_policy="fill",
+):
     """
     Cluster aggregates LCMS features into groups based on sample-correlation and
         retention time. It builds a network based on retention time difference and
@@ -31,96 +204,85 @@ def cluster(df, rt_thresh=0.02, corr_value=0.8, batch_size=1000, method="Spearma
     Dataframe, containing cluster number and number of members for each feature. -1
        indicates a single, unclustered feature.
     """
-    eclipse_columns = [
-        "RT",
-        "MZ",
-        "Intensity",
-        "Non_Quant",
-        "Compound_ID",
-        "Adduct",
-        "Annotation_ID",
-        "Metabolite",
-    ]
-    sample_df = df.copy().drop(eclipse_columns, axis=1, errors="ignore").transpose()
-    sample_df.columns.name = None  # otherwise it crashes during stack
     rt_series = df["RT"]
-    num_batches = math.ceil(len(sample_df.columns) / batch_size)
+    rt_series.index.name = None  # otherwise it crashes during stack
+    sample_df = df.copy().drop(ECLIPSE_COLUMNS, axis=1, errors="ignore")
+
+    num_features = len(sample_df.index)
+    num_batches = math.ceil(num_features / batch_size)
     graph = nx.Graph()
-
+    sample_df = sample_df.values.copy()
+    if nan_policy == "zeroes":
+        sample_df = sample_df.nan_to_num()
     for i in range(num_batches):
-        LOGGER.info(f"Correlating Batch {i+1}/{num_batches}...")
+        LOGGER.info(f"Correlating Batch {i + 1}/{num_batches}...")
         for j in range(i, num_batches):
-            # calculate correlation of the two batches
-            batch_a = sample_df.iloc[:, i * batch_size : (i + 1) * batch_size]
-            batch_b = sample_df.iloc[:, j * batch_size : (j + 1) * batch_size]
-            if method == "Spearman":
-                batch_a = batch_a.rank(na_option="top")
-                batch_b = batch_b.rank(na_option="top")
-            a_zs = batch_a - batch_a.mean()
-            b_zs = batch_b - batch_b.mean()
-            corr = (
-                a_zs.T.dot(b_zs)
-                .div(len(batch_a))
-                .div(b_zs.std(ddof=0))
-                .div(a_zs.std(ddof=0), axis=0)
-            )
-            links = corr.stack().reset_index()
-            links.columns = ["var1", "var2", "value"]
-            # filter spearman
-            links = links.loc[
-                (links["value"] > corr_value) & (links["var1"] != links["var2"])
+            i_indices = [
+                i * batch_size,
+                min((i + 1) * batch_size, num_features),
             ]
-            # get RT and filter by that, and append to list
-            links["RT_diff"] = (
-                rt_series[links["var1"]].values - rt_series[links["var2"]].values
+            j_indices = [
+                j * batch_size,
+                min((j + 1) * batch_size, num_features),
+            ]
+            a_index, b_index, corrs = corr_array(
+                i_indices,
+                j_indices,
+                rt_series,
+                sample_df,
+                corr_value,
+                rt_thresh,
+                method,
+                nan_policy,
             )
-            links["RT_diff"] = links["RT_diff"].abs()
-            links = links.loc[(links["RT_diff"] < rt_thresh)]
+            a_index = df.index[a_index]
+            b_index = df.index[b_index]
+
             edges = [
-                (s, t, {"coor": coor})
-                for s, t, coor in zip(
-                    links["var1"].values, links["var2"].values, links["value"]
-                )
+                (s, t, {"coor": coor}) for s, t, coor in zip(a_index, b_index, corrs)
             ]
-            graph.add_nodes_from(links["var1"].values)
-            graph.add_nodes_from(links["var2"].values)
+            graph.add_nodes_from(a_index)
+            graph.add_nodes_from(b_index)
             graph.add_edges_from(edges)
+    return deconvolute(df.index, graph)
 
-    cluster_df = pd.DataFrame({"Cluster_Num": None, "Cluster_Size": 1}, index=df.index)
-    i = 0
-    while True:
-        # delete singletons
-        graph.remove_nodes_from(list(nx.isolates(graph)))
 
-        # find the largest cliques
-        max_cliques = []
-        max_size = 1
-        for clique in nx.find_cliques(graph):
-            if len(clique) > max_size:
-                max_size = len(clique)
-                max_cliques = [clique]
-            elif len(clique) == max_size:
-                max_cliques.append(clique)
-        if not max_cliques:
-            break
-        # calculate correlation
-        best_clique = None
-        best_score = 0
-        for clique in max_cliques:
-            temp = 0
-            clique_graph = graph.subgraph(clique).copy()
-            for edge in clique_graph.edges(data=True):
-                temp += edge[2]["coor"]
-            if temp > best_score:
-                best_score = temp
-                best_clique = clique
+if __name__ == "__main__":
+    data = pd.read_csv(
+        r"C:\Users\danie\work\beta-muricholate.csv", index_col="Compound_ID"
+    )
+    data = data.replace(0, np.nan)
+    # fmt: off
+    arr1 = [
+        [np.nan, np.nan],  # 0
+        [1, np.nan],  # 1
+        [1, np.nan],
+        [1, np.nan],
+        [1, np.nan],
+        [2, np.nan],  # 5
+        [2, np.nan],
+        [2, 1],  # 7
+        [np.nan, 2],
+        [3, np.nan],
+        [3, np.nan],  # 10
+        [3, 5],
+        [np.nan, np.nan],
+        [4, 7],
+        [4, np.nan],
+        [4, 9],  # 15
+        [4, 10],  # 16
+        [np.nan, np.nan],  # 17
+    ]
 
-        # label, delete and iterate
-        features = list(best_clique)
-        cluster_df.loc[features, "Cluster_Num"] = i
-        cluster_df.loc[features, "Cluster_Size"] = max_size
-        if i % 50 == 0:
-            LOGGER.info(f"On cluster {i}, which contains {max_size} features.")
-        i += 1
-        graph.remove_nodes_from(features)
-    return cluster_df
+    arr = np.array(arr1).T.astype(np.float64).copy()
+    # fmt: on
+
+    # print(pearson_array_m(arr1, 0, 1))
+    # spearman zeroes
+    # spearman fill
+    # spearman drop
+    # pearson zeroes
+    # pearson drop
+    print(spearman_array(np.nan_to_num(arr), 0, 1, nan_policy="drop"))
+    # print(pearson_array(arr1, 0, 1))
+    # print("done")
