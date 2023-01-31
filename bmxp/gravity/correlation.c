@@ -72,7 +72,7 @@ double pearson(double* x, double* y, int32_t size) {
 
 void free_p(void* ptr) { free(ptr); }
 
-double spearman(double* x, double* y, int32_t size, int32_t dropNan) {
+double spearman(double* x, double* y, int32_t size, int32_t dropNan, int32_t legacyMode) {
   Ranking* sortedX = malloc(sizeof(Ranking) * size);
   Ranking* sortedY = malloc(sizeof(Ranking) * size);
   int32_t* eitherNan = malloc(sizeof(int32_t) * size);
@@ -83,7 +83,7 @@ double spearman(double* x, double* y, int32_t size, int32_t dropNan) {
   int32_t i = 0;
   int32_t j = 0;
 
-  if (dropNan) {
+  if (legacyMode) {
     xCopy = malloc(sizeof(double) * size);
     yCopy = malloc(sizeof(double) * size);
 
@@ -291,8 +291,9 @@ double spearman(double* x, double* y, int32_t size, int32_t dropNan) {
   return result;
 }
 
-double spearman_array(double* arr, int32_t r1_start, int32_t r2_start, int32_t size, int32_t dropNan) {
-  return spearman(&arr[r1_start * size], &arr[r2_start * size], size, dropNan);
+double spearman_array(double* arr, int32_t r1_start, int32_t r2_start, int32_t size, int32_t dropNan,
+                      int32_t legacyMode) {
+  return spearman(&arr[r1_start * size], &arr[r2_start * size], size, dropNan, legacyMode);
 }
 
 double pearson_array(double* arr, int32_t r1_start, int32_t r2_start, int32_t size) {

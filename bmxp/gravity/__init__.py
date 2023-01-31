@@ -20,46 +20,56 @@ Pearson - Drop NaNs (Don't fill, call by_rt)
 
 import logging
 import math
-import pandas as pd
-import networkx as nx
 from ctypes import CDLL, c_double, c_int32, c_void_p
 import os
 import platform
+import pandas as pd
+import networkx as nx
 import numpy as np
+from bmxp.gravity import fallback
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
-if platform.system() == "Windows":
+correlation = None
+if platform.system() == "Windows" and os.path.exists(
+    os.path.join(dir_path, "correlation.dll")
+):
     correlation = CDLL(os.path.join(dir_path, "correlation.dll"))
-else:
+elif platform.system() == "Linux" and os.path.exists(
+    os.path.join(dir_path, "correlation.so")
+):
     correlation = CDLL(os.path.join(dir_path, "correlation.so"))
 
 c_array = np.ctypeslib.ndpointer(dtype=np.float64, flags="C_CONTIGUOUS")
 int32_array = np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS")
 
-correlation.free_p.argtypes = [c_void_p]
+if correlation:
+    correlation.free_p.argtypes = [c_void_p]
 
-correlation.pearson_array.argtypes = [
-    c_array,
-    c_int32,
-    c_int32,
-    c_int32,
-]
-correlation.pearson_array.restype = c_double
+    correlation.pearson_array.argtypes = [c_array, c_int32, c_int32, c_int32]
+    correlation.pearson_array.restype = c_double
 
-correlation.spearman_array.argtypes = [c_array, c_int32, c_int32, c_int32, c_int32]
-correlation.spearman_array.restype = c_double
+    correlation.spearman_array.argtypes = [
+        c_array,  # arr
+        c_int32,  # r1_start
+        c_int32,  # r2_start
+        c_int32,  # size
+        c_int32,  # dropNan
+        c_int32,  # legacyMode
+    ]
+    correlation.spearman_array.restype = c_double
+    correlation.pearson.argtypes = [c_array, c_array, c_int32]
+    correlation.pearson.restype = c_double
 
-correlation.pearson.argtypes = [c_array, c_array, c_int32]
-correlation.pearson.restype = c_double
-
-correlation.spearman.argtypes = [c_array, c_array, c_int32, c_int32]
-correlation.spearman.restype = c_double
+    correlation.spearman.argtypes = [c_array, c_array, c_int32, c_int32, c_int32]
+    correlation.spearman.restype = c_double
+else:
+    correlation = fallback
 
 logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.0.5"
+__version__ = "0.0.6"
 ECLIPSE_COLUMNS = [
     "RT",
     "MZ",
@@ -83,9 +93,11 @@ def pearson_array(arr1, r1_start, r2_start):
     return r_p
 
 
-def spearman_array(arr1, r1_start, r2_start, nan_policy="fill"):
+def spearman_array(arr1, r1_start, r2_start, nan_policy="fill", legacy_mode=False):
     drop_nan = nan_policy != "fill"
-    r_p = correlation.spearman_array(arr1, r1_start, r2_start, len(arr1[0]), drop_nan)
+    r_p = correlation.spearman_array(
+        arr1, r1_start, r2_start, len(arr1[0]), drop_nan, legacy_mode
+    )
     return r_p
 
 
@@ -95,11 +107,11 @@ def pearson(x, y):
     return correlation.pearson(x, y, len(x))
 
 
-def spearman(x, y, nan_policy="fill"):
+def spearman(x, y, nan_policy="fill", legacy_mode=False):
     x = np.array(x).astype(np.float64)
     y = np.array(y).astype(np.float64)
     drop_nan = nan_policy != "fill"
-    return correlation.spearman(x, y, len(x), drop_nan)
+    return correlation.spearman(x, y, len(x), drop_nan, legacy_mode)
 
 
 def deconvolute(df_index, graph):
@@ -155,7 +167,9 @@ def deconvolute(df_index, graph):
     return cluster_df
 
 
-def corr_array(i, j, rt_series, df, corr_value, rt_thresh, method, nan_policy):
+def corr_array(
+    i, j, rt_series, df, corr_value, rt_thresh, method, nan_policy, legacy_mode
+):
 
     # long winded way to find RT differences and the indices
     # similar to pd.stack
@@ -173,7 +187,7 @@ def corr_array(i, j, rt_series, df, corr_value, rt_thresh, method, nan_policy):
     for k, a_val in enumerate(a_index):
         b_val = b_index[k]
         if method == "spearman":
-            corr_results[k] = spearman_array(df, a_val, b_val, nan_policy)
+            corr_results[k] = spearman_array(df, a_val, b_val, nan_policy, legacy_mode)
         else:
             corr_results[k] = pearson_array(df, a_val, b_val)
     to_return = corr_results > corr_value
@@ -187,6 +201,7 @@ def cluster(
     batch_size=1000,
     method="spearman",
     nan_policy="fill",
+    legacy_mode=False,
 ):
     """
     Cluster aggregates LCMS features into groups based on sample-correlation and
@@ -200,6 +215,8 @@ def cluster(
     corr_value: float, correlation cutoff
     batch_size: int, batch size for calculating correlations
     method: string, "Spearman" or "Pearson" correlation
+    legacy_mode: boolean, when True, NaNs are filled with 0s when correlating features
+    with very few overlapping non-NaN values (Spearman only)
     Returns
     Dataframe, containing cluster number and number of members for each feature. -1
        indicates a single, unclustered feature.
@@ -234,6 +251,7 @@ def cluster(
                 rt_thresh,
                 method,
                 nan_policy,
+                legacy_mode,
             )
             a_index = df.index[a_index]
             b_index = df.index[b_index]
