@@ -69,7 +69,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.0.6"
+__version__ = "0.0.7"
 ECLIPSE_COLUMNS = [
     "RT",
     "MZ",
@@ -230,7 +230,7 @@ def cluster(
     graph = nx.Graph()
     sample_df = sample_df.values.copy()
     if nan_policy == "zeroes":
-        sample_df = sample_df.nan_to_num()
+        sample_df = np.nan_to_num(sample_df)
     for i in range(num_batches):
         LOGGER.info(f"Correlating Batch {i + 1}/{num_batches}...")
         for j in range(i, num_batches):
