@@ -22,7 +22,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.0.3"
+__version__ = "0.0.5"
 
 
 def dataset_loops(attr=None):
@@ -940,18 +940,23 @@ def calc_scalers(x1, x2, smoothing=None, mode="linear", **kwargs):
     noise = (np.random.random(size=len(x1)) - 0.5) * x1 / 10 ** 12
 
     # allow us to override frac via kwargs
-    if "frac" not in kwargs:
-        kwargs["frac"] = 0.1
+    temp_kwargs = kwargs.copy()
+    if "frac" not in temp_kwargs:
+        temp_kwargs["frac"] = 0.1
 
-    # If we get NaN for all our answers, add a bit to the frac and try again.
-    # Or give up. It will be obvious in the report that it failed
     delta = 0.01 * (max(x1) - min(x1))
-    scalers = lowess(y, x1 + noise, return_sorted=False, delta=delta, **kwargs)
-    while np.isnan(scalers).all():
-        kwargs["frac"] += 0.01
-        if kwargs["frac"] >= 1.0:
+    scalers = lowess(y, x1 + noise, return_sorted=False, delta=delta, **temp_kwargs)
+
+    # On failure, depending on statsmodels version, either returns NaNs, or
+    # the residuals. Try adding more until it works or reaches 1. On reaching 1,
+    # it should be obvious that smoothing failed or it is over smoothed.
+    while np.isnan(scalers).all() or np.array_equal(scalers, y):
+        temp_kwargs["frac"] += 0.01
+        if temp_kwargs["frac"] >= 1.0:
             break
-        scalers = lowess(y, x1 + noise, return_sorted=False, delta=delta, **kwargs,)
+        scalers = lowess(
+            y, x1 + noise, return_sorted=False, delta=delta, **temp_kwargs,
+        )
     return (x1, scalers)
 
 
@@ -1056,14 +1061,14 @@ def gen_intensity(dataset, ignore=None):
     """
     calculate an intensity column, using all columns that are not named '
      RT','MZ','Compound_ID'
-    overwrites the existing dataframe with another one where Intensity is on the far end
+    overwrites the existing dataframe with another one where Intensity is at index 1
 
     :param dataset: pandas Dataframe where there are intensities to calculate
     """
     if ignore:
         calc_df = dataset.drop(columns=ignore)
     calc_df.fillna(0, inplace=True)
-    dataset["Intensity"] = calc_df.mean(axis=1)
+    dataset.insert(1, "Intensity", calc_df.mean(axis=1))
 
 
 def scale_to(x, x_scalers, y_scalers, mode="linear"):
