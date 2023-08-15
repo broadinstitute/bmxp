@@ -22,7 +22,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.0.5"
+__version__ = "0.0.6"
 
 
 def dataset_loops(attr=None):
@@ -827,11 +827,17 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         with PdfPages(file_handle) as pdf:
             for ds1 in datasets_1:
                 for ds2 in datasets_2:
-                    if ds1 == ds2:
+                    if (
+                        ds1 == ds2
+                        or ds1 not in self.scalers
+                        or ds2 not in self.scalers[ds1]
+                    ):
                         continue
                     eval_chart(self, ds1, ds2, show=False)
                     pdf.savefig()
                     plt.close("all")
+                    if ds1 not in self.matches or ds2 not in self.matches[ds1]:
+                        continue
                     eval_chart(self, ds1, ds2, show=False, results=True)
                     pdf.savefig()
                     plt.close("all")
