@@ -22,7 +22,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.0.6"
+__version__ = "0.0.7"
 
 
 def dataset_loops(attr=None):
@@ -431,18 +431,18 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         self, coarse_params, rec=True
     ):  # pylint: disable=too-many-branches
         """
-                Function to set custom cutoffs. If rec is true, apply reciprocal cutoffs
-                {
-                    'DS1': {
-                        'DS2':{
-                            'rt_minus': -.7,
-                            'ppm_plus': 4
-                        }
-                    }
+        Function to set custom cutoffs. If rec is true, apply reciprocal cutoffs
+        {
+            'DS1': {
+                'DS2':{
+                    'rt_minus': -.7,
+                    'ppm_plus': 4
                 }
-                :param coarse_params: dict
-                :param rec: bool
-                """
+            }
+        }
+        :param coarse_params: dict
+        :param rec: bool
+        """
         coarse_params = coarse_params.copy()
         for ds1 in coarse_params:
             # make coarse_params dicts if they don't exist
@@ -695,7 +695,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
             self.scalers[ds1][ds2] = {}
 
         scalers = {}
-        for (descr, mode) in self.descriptors.items():
+        for descr, mode in self.descriptors.items():
             if descr not in self.scalers[ds1][ds2]:
                 scaled = calc_scalers(
                     ds1_matches[descr].values,
@@ -716,7 +716,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         # extract anchors, match, and convert results to a dataframe
         scaled = pd.DataFrame(index=self.datasets[ds1].index)
         scalers = self.scalers[ds1][ds2]
-        for (descr, mode) in self.descriptors.items():
+        for descr, mode in self.descriptors.items():
             scaled[descr] = scale_to(
                 self.datasets[ds1][descr],
                 scalers[descr]["x"],
@@ -734,7 +734,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         coarse_matches = self.coarse_matches[ds1][ds2]
         scalers = self.scalers[ds1][ds2]
         self.stds[ds1][ds2] = {}
-        for (descr, mode) in self.descriptors.items():
+        for descr, mode in self.descriptors.items():
             ds1_vals = self.datasets[ds1].loc[coarse_matches[ds1], descr]
             ds2_vals = self.datasets[ds2].loc[coarse_matches[ds2], descr]
             s_ds1_vals = scale_to(
@@ -804,7 +804,11 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         self.graph.add_edges_from(edges)
 
     def report(
-        self, datasets_1=None, datasets_2=None, filepath="report.pdf", to_bytes=False,
+        self,
+        datasets_1=None,
+        datasets_2=None,
+        filepath="report.pdf",
+        to_bytes=False,
     ):
         """
         Creates a report of the alignment parameters.
@@ -892,7 +896,7 @@ def score_match(df1, df2, stds, descriptors, cutoffs, weights, top_n=3):
 
             # whittle hits down to list
             potential_hits = potential_hits & (
-                (np2[:, i] > bounds[0]) & (np2[:, i] < bounds[1])
+                (np2[:, i] >= bounds[0]) & (np2[:, i] <= bounds[1])
             )
 
         hits_index = df2.index[potential_hits]
@@ -943,7 +947,7 @@ def calc_scalers(x1, x2, smoothing=None, mode="linear", **kwargs):
 
     # +/- <0.5 ppt random noise to break ties
     np.random.seed(0)
-    noise = (np.random.random(size=len(x1)) - 0.5) * x1 / 10 ** 12
+    noise = (np.random.random(size=len(x1)) - 0.5) * x1 / 10**12
 
     # allow us to override frac via kwargs
     temp_kwargs = kwargs.copy()
@@ -961,7 +965,11 @@ def calc_scalers(x1, x2, smoothing=None, mode="linear", **kwargs):
         if temp_kwargs["frac"] >= 1.0:
             break
         scalers = lowess(
-            y, x1 + noise, return_sorted=False, delta=delta, **temp_kwargs,
+            y,
+            x1 + noise,
+            return_sorted=False,
+            delta=delta,
+            **temp_kwargs,
         )
     return (x1, scalers)
 
@@ -987,7 +995,6 @@ def anchors(ds, match_params, remove_all=True, priority="Intensity"):
     inclusion = set()
     exclusion = set()
     for i, row in enumerate(ds):
-
         # if a feature has been marked for removal, skip it.
         # important for non-remove all algorithm
         if not remove_all and index[i] in exclusion:
@@ -1103,7 +1110,7 @@ def scale_to(x, x_scalers, y_scalers, mode="linear"):
     if isinstance(scaled, pd.Series):
         scaled = scaled.values
     if mode == "log10":
-        scaled = 10 ** scaled
+        scaled = 10**scaled
     return scaled
 
 
@@ -1141,8 +1148,7 @@ def calc_score(v1, v2, descriptors, stds, weights):
     :return: float, score
     """
     penalty = 0
-    for (descr, mode) in descriptors.items():
-
+    for descr, mode in descriptors.items():
         if mode == "linear":
             penalty += ((v1[descr] - v2[descr]) / stds[descr]) ** 2 * weights[descr]
         elif mode == "ppm":
@@ -1206,7 +1212,11 @@ def eval_chart(self, key1, key2, show=True, results=False):
         # plot the deltas
         plt.subplot(len(self.descriptors), 3, 3 * i + 1)
         plt.scatter(
-            descr_1, y_vals, alpha=0.4, s=3, rasterized=True,
+            descr_1,
+            y_vals,
+            alpha=0.4,
+            s=3,
+            rasterized=True,
         )
         plt.title(f"{descr} {key1} vs {key2}")
         plt.xlabel(f"{title} {descr} {key1}")
@@ -1216,7 +1226,11 @@ def eval_chart(self, key1, key2, show=True, results=False):
         # plot the scaled
         plt.subplot(len(self.descriptors), 3, 3 * i + 2)
         plt.scatter(
-            descr_1, s_y_vals, alpha=0.4, s=3, rasterized=True,
+            descr_1,
+            s_y_vals,
+            alpha=0.4,
+            s=3,
+            rasterized=True,
         )
         plt.title(f"{descr} {key1} vs {key2}")
         plt.xlabel(f"{title} {descr} {key1}")
@@ -1226,7 +1240,10 @@ def eval_chart(self, key1, key2, show=True, results=False):
         # plot histogram
         plt.subplot(len(self.descriptors), 3, 3 * i + 3)
         plt.hist(
-            x=(s_y_vals), bins="auto", alpha=0.7, rwidth=0.85,
+            x=(s_y_vals),
+            bins="auto",
+            alpha=0.7,
+            rwidth=0.85,
         )
         plt.title(f"{descr} Histograms")
         plt.xlabel(f"{title} {descr} ({key2} - {key1})")

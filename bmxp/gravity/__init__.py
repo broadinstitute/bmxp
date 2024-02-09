@@ -69,7 +69,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.0.7"
+__version__ = "0.0.8"
 ECLIPSE_COLUMNS = [
     "RT",
     "MZ",
@@ -89,7 +89,12 @@ def free_p(p):
 
 
 def pearson_array(arr1, r1_start, r2_start):
-    r_p = correlation.pearson_array(arr1, r1_start, r2_start, len(arr1[0]),)
+    r_p = correlation.pearson_array(
+        arr1,
+        r1_start,
+        r2_start,
+        len(arr1[0]),
+    )
     return r_p
 
 
@@ -170,7 +175,6 @@ def deconvolute(df_index, graph):
 def corr_array(
     i, j, rt_series, df, corr_value, rt_thresh, method, nan_policy, legacy_mode
 ):
-
     # long winded way to find RT differences and the indices
     # similar to pd.stack
     np_batch_a = rt_series.iloc[i[0] : i[1]].values
@@ -192,6 +196,30 @@ def corr_array(
             corr_results[k] = pearson_array(df, a_val, b_val)
     to_return = corr_results > corr_value
     return a_index[to_return], b_index[to_return], corr_results[to_return]
+
+
+def gen_batches(num_features, batch_size):
+    """
+    Generates batches for clustering, based on number of features and batch size
+    """
+    num_batches = math.ceil(num_features / batch_size)
+    for i in range(num_batches):
+        for j in range(i, num_batches):
+            i_indices = [
+                i * batch_size,
+                min((i + 1) * batch_size, num_features),
+            ]
+            j_indices = [
+                j * batch_size,
+                min((j + 1) * batch_size, num_features),
+            ]
+            yield {
+                "i": i,
+                "j": j,
+                "i_indices": i_indices,
+                "j_indices": j_indices,
+                "num_batches": num_batches,
+            }
 
 
 def cluster(
@@ -226,42 +254,30 @@ def cluster(
     sample_df = df.copy().drop(ECLIPSE_COLUMNS, axis=1, errors="ignore")
 
     num_features = len(sample_df.index)
-    num_batches = math.ceil(num_features / batch_size)
     graph = nx.Graph()
     sample_df = sample_df.values.copy()
     if nan_policy == "zeroes":
         sample_df = np.nan_to_num(sample_df)
-    for i in range(num_batches):
-        LOGGER.info(f"Correlating Batch {i + 1}/{num_batches}...")
-        for j in range(i, num_batches):
-            i_indices = [
-                i * batch_size,
-                min((i + 1) * batch_size, num_features),
-            ]
-            j_indices = [
-                j * batch_size,
-                min((j + 1) * batch_size, num_features),
-            ]
-            a_index, b_index, corrs = corr_array(
-                i_indices,
-                j_indices,
-                rt_series,
-                sample_df,
-                corr_value,
-                rt_thresh,
-                method,
-                nan_policy,
-                legacy_mode,
-            )
-            a_index = df.index[a_index]
-            b_index = df.index[b_index]
-
-            edges = [
-                (s, t, {"coor": coor}) for s, t, coor in zip(a_index, b_index, corrs)
-            ]
-            graph.add_nodes_from(a_index)
-            graph.add_nodes_from(b_index)
-            graph.add_edges_from(edges)
+    for batch_info in gen_batches(num_features, batch_size):
+        num_batches = batch_info["num_batches"]
+        LOGGER.info(f"Correlating Batch { batch_info['i'] + 1}/{num_batches}...")
+        a_index, b_index, corrs = corr_array(
+            batch_info["i_indices"],
+            batch_info["j_indices"],
+            rt_series,
+            sample_df,
+            corr_value,
+            rt_thresh,
+            method,
+            nan_policy,
+            legacy_mode,
+        )
+        a_index = df.index[a_index]
+        b_index = df.index[b_index]
+        edges = [(s, t, {"coor": coor}) for s, t, coor in zip(a_index, b_index, corrs)]
+        graph.add_nodes_from(a_index)
+        graph.add_nodes_from(b_index)
+        graph.add_edges_from(edges)
     return deconvolute(df.index, graph)
 
 
