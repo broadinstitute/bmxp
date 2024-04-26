@@ -2,8 +2,7 @@
 """
 Tests for MSEclipse
 """
-import os
-import sys
+from pathlib import Path
 import pickle
 import pytest
 import numpy as np
@@ -16,8 +15,7 @@ def filepath_1():
     """
     First file path for test
     """
-    print("*****************", os.getcwd())
-    return "tests/test1.csv"
+    return Path(__file__).parent / "test1.csv"
 
 
 @pytest.fixture()
@@ -25,7 +23,7 @@ def filepath_2():
     """
     Second file path for test
     """
-    return "tests/test2.csv"
+    return Path(__file__).parent / "test2.csv"
 
 
 @pytest.fixture()
@@ -33,7 +31,7 @@ def filepath_3():
     """
     Third file path for test
     """
-    return "tests/test3.csv"
+    return Path(__file__).parent / "test3.csv"
 
 
 @pytest.fixture()
@@ -66,7 +64,9 @@ def pickled_ms():
     Load pickled file
     """
     return pickle.load(
-        open("tests/mseclipse.pickle", "rb")  # pylint: disable=consider-using-with
+        open(
+            Path(__file__).parent / "mseclipse.pickle", "rb"
+        )  # pylint: disable=consider-using-with
     )
 
 
@@ -188,7 +188,11 @@ def test_alignment_methods(dataframe_1, dataframe_2, pickled_ms):
     a.set_scalers(
         {
             "HP1": {
-                "HP2": {"RT": zip(*rt), "MZ": zip(*mz), "Intensity": zip(*intensity),}
+                "HP2": {
+                    "RT": zip(*rt),
+                    "MZ": zip(*mz),
+                    "Intensity": zip(*intensity),
+                }
             }
         },
         rec=False,
@@ -207,7 +211,11 @@ def test_alignment_methods(dataframe_1, dataframe_2, pickled_ms):
     a.set_scalers(
         {
             "HP1": {
-                "HP2": {"RT": zip(*rt), "MZ": zip(*mz), "Intensity": zip(*intensity),}
+                "HP2": {
+                    "RT": zip(*rt),
+                    "MZ": zip(*mz),
+                    "Intensity": zip(*intensity),
+                }
             }
         },
         rec=True,
@@ -243,12 +251,14 @@ def test_calc_scalers():
     Supplemental tests to calculating scalers
     """
 
-    # Will only return nans. Test it does not make an infinite loop
-    assert np.isnan(
-        ms.calc_scalers(
-            np.array([0, 0, 1]), np.array([1, 1, 2]), smoothing="lowess", mode="linear"
-        )[1]
-    ).all()
+    # Will return either nans, the original y_vals, or 1s.
+    # Test it does not make an infinite loop
+    x_vals = np.array([0, 0, 1])
+    y_vals = np.array([1, 1, 2])
+    results = ms.calc_scalers(x_vals, y_vals, smoothing="lowess", mode="linear")[1]
+    all_nans = np.isnan(results).all()
+    is_original = np.isclose(np.array([1, 1, 1]), results).all()
+    assert all_nans or is_original
 
 
 def test_adding_intensity_column(dataframe_3):

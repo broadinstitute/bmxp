@@ -15,7 +15,7 @@ module1 = Extension
 setup(
     name="bmxp",
     install_requires=REQUIREMENTS.split("\n"),
-    version="0.0.17",
+    version="0.0.18",
     description="LCMS Processing tools used by the Metabolomics Platform at the Broad"
     " Institute.",
     packages=find_namespace_packages(include=["bmxp.*"]),
@@ -24,7 +24,15 @@ setup(
     author_email="daniel.s.hitchcock@gmail.com",
     long_description_content_type="text/markdown",
     long_description=LONG_DESCRIPTION,
-    keywords=["LCMS", "Alignment", "Processing", "Metabolomics", "Clustering"],
+    keywords=[
+        "LCMS",
+        "Alignment",
+        "Processing",
+        "Metabolomics",
+        "Clustering",
+        "Batch Correction",
+        "Drift Correction",
+    ],
     classifiers=[
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
