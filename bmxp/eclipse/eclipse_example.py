@@ -156,7 +156,9 @@ a.gen_scaled_values("DS1", "DS2")
 a.gen_matches("DS1", "DS2")
 
 a.report(
-    datasets_1="DS1", datasets_2="DS2", filepath="one-way-results.pdf",
+    datasets_1="DS1",
+    datasets_2="DS2",
+    filepath="one-way-results.pdf",
 )
 
 
@@ -171,7 +173,9 @@ a.align(["DS2", "DS3"], "DS1")
 
 a.report(datasets_1="DS1", datasets_2=["DS2", "DS3"], filepath="DS1_to.pdf")
 a.report(
-    datasets_1=["DS2", "DS3"], datasets_2="DS1", filepath="DS1_from.pdf",
+    datasets_1=["DS2", "DS3"],
+    datasets_2="DS1",
+    filepath="DS1_from.pdf",
 )
 
 a.to_csv("DS1", union_only=False)

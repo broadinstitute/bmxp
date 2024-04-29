@@ -2,6 +2,7 @@
 """
 Tests for Gravity
 """
+from pathlib import Path
 import pytest
 import pandas as pd
 from bmxp import gravity
@@ -12,7 +13,7 @@ def filepath():
     """
     First file path for test
     """
-    return "tests/test_gravity.csv"
+    return Path(__file__).parent / "test_gravity.csv"
 
 
 @pytest.fixture()
