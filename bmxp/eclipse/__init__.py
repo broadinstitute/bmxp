@@ -14,6 +14,7 @@ from scipy import interpolate
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+from bmxp import FMDATA
 
 logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.0.7"
+__version__ = "0.0.8"
 
 
 def dataset_loops(attr=None):
@@ -85,6 +86,20 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
     MSAligner stores 2 or more MS Datasets and performs matching, scaling, and
     alignments between them.
     """
+    descriptors = {FMDATA["RT"]: "linear", FMDATA["MZ"]: "ppm", "Intensity": "log10"}
+    default_cutoff = 6
+    default_weight = 1
+    default_coarse_params = {
+        FMDATA["RT"]: {"upper": 0.5, "lower": -0.5},
+        FMDATA["MZ"]: {"upper": 15, "lower": -15},
+        FMDATA["Intensity"]: {"upper": 2, "lower": -2},
+    }
+    default_scaler_params = {
+        "smoothing_method": "lowess",
+        "smoothing_params": {"frac": 0.1},
+    }
+    feature_name = FMDATA["Compound_ID"]
+    intensity_col = FMDATA["Intensity"]
 
     def __init__(self, *args, names=None):
         """
@@ -93,20 +108,13 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         :param args: tuple[str], filepaths of .csv datasets
         :param names: list[str], names of datasets
         """
-        self.descriptors = {"RT": "linear", "MZ": "ppm", "Intensity": "log10"}
-        self.default_cutoffs = {"RT": 6, "Intensity": 6, "MZ": 6}
-        self.default_weights = {"RT": 1, "Intensity": 1, "MZ": 1}
-        self.default_coarse_params = {
-            "RT": {"upper": 0.5, "lower": -0.5},
-            "MZ": {"upper": 15, "lower": -15},
-            "Intensity": {"upper": 2, "lower": -2},
-        }
-        self.default_scaler_params = {
-            "smoothing_method": "lowess",
-            "smoothing_params": {"frac": 0.1},
-        }
-        self.feature_name = "Compound_ID"
-        self.anchor_priority = "Intensity"
+        self.descriptors = MSAligner.descriptors
+        self.default_cutoff = MSAligner.default_cutoff
+        self.default_weight = MSAligner.default_weight
+        self.default_coarse_params = MSAligner.default_coarse_params
+        self.default_scaler_params = MSAligner.default_scaler_params
+        self.feature_name = MSAligner.feature_name
+        self.intensity_col = MSAligner.intensity_col
         self.datasets = collections.OrderedDict()
         self.anchors = {}
         self.coarse_matches = {}
@@ -182,11 +190,13 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         for name in names:
             ds = self.datasets[name]
             # calculate intensity if needed
-            if "Intensity" not in ds.columns and "Intensity" in self.descriptors:
+            if self.intensity_col not in ds.columns and self.intensity_col in self.descriptors:
                 gen_intensity(
                     ds,
-                    ignore=[descr for descr in self.descriptors if descr != "Intensity"]
-                    + [self.feature_name],
+                    self.intensity_col,
+                    ignore=[descr for descr in self.descriptors if descr != self.intensity_col]
+                    + [self.feature_name]
+
                 )
 
             # Check required columns
@@ -201,18 +211,18 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         """
 
         for key, item in params.items():
-            if key.lower() == "cutoffs":
-                self.default_cutoffs.update(item)
-            elif key.lower() == "weights":
-                self.default_weights.update(item)
-            elif key.lower() == "coarse_params":
+            # if key.lower() == "cutoffs":
+            #     self.default_cutoffs.update(item)
+            # elif key.lower() == "weights":
+            #     self.default_weights.update(item)
+            if key.lower() == "coarse_params":
                 self.default_coarse_params.update(item)
             elif key.lower() == "scaler_params":
                 self.default_scaler_params.update(item)
             else:
                 raise KeyError(
-                    f"Unknown value: {key}. Acceptable values are 'cutoffs', 'weights',"
-                    " 'coarse_params', and 'scaler_params'."
+                    f"Unknown value: {key}. Acceptable values are "
+                    " 'coarse_params' and 'scaler_params'."
                 )
 
     def set_params(self, params, rec=True):
@@ -756,17 +766,18 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         """
         LOGGER.info(f"Matching {ds1} -> {ds2}...")
         # generate the weights and cutoffs
-        cutoffs = self.default_cutoffs.copy()
-        try:
-            cutoffs.update(self.cutoffs[ds1][ds2])
-        except KeyError:
-            pass
-
-        weights = self.default_weights.copy()
-        try:
-            weights.update(self.weights[ds1][ds2])
-        except KeyError:
-            pass
+        # if no "custom" cutoffs or weights are present, use default
+        cutoffs = {}
+        weights = {}
+        for descr in self.descriptors:
+            try:
+                cutoffs[descr] = self.cutoffs[ds1][ds2][descr]
+            except KeyError:
+                cutoffs[descr] = self.default_cutoff
+            try:
+                weights[descr] = self.weights[ds1][ds2][descr]
+            except KeyError:
+                weights[descr] = self.default_weight
 
         self.matches[ds1][ds2] = score_match(
             self.scaled_values[ds1][ds2],
@@ -851,14 +862,14 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         return None
 
 
-def score_match(df1, df2, stds, descriptors, cutoffs, weights, top_n=3):
+def score_match(df1, df2, stds, descriptors, cutoffs, weights, top_n=1):
     """
     Returns scored best matches for a dataframe to another
     :param df1: DataFrame, first dataset
     :param df2: DataFrame, second dataset
     :param stds: Dict, standard deviations for "RT", "MT", and "Intensity"
-    :param weights: Dict, Multipliers for weights
     :param cutoffs: Dict, Multipliers for finding cutoffs
+    :param weights: Dict, Multipliers for weights
     :param top_n: Int, number of potential matches to record
     :return: Dataframe, df1 index as index, and matching df2 index in top_n columns
     """
@@ -909,7 +920,7 @@ def score_match(df1, df2, stds, descriptors, cutoffs, weights, top_n=3):
                 calc_score(ds1_values, ds2_values, descriptors, stds, weights)
             )
 
-        # append the top 3
+        # append the top n
         results.append([score for _, score in sorted(zip(scores, hits_index))][:top_n])
     results = pd.DataFrame(results, index=df1.index)
     return results
@@ -1070,7 +1081,7 @@ def simple_match(df1, df2, match_params):
     return results
 
 
-def gen_intensity(dataset, ignore=None):
+def gen_intensity(dataset, intensity_col = "Intensity", ignore=None):
     """
     calculate an intensity column, using all columns that are not named '
      RT','MZ','Compound_ID'
@@ -1081,7 +1092,7 @@ def gen_intensity(dataset, ignore=None):
     if ignore:
         calc_df = dataset.drop(columns=ignore)
     calc_df.fillna(0, inplace=True)
-    dataset.insert(1, "Intensity", calc_df.mean(axis=1))
+    dataset.insert(1, intensity_col, calc_df.mean(axis=1, numeric_only=True))
 
 
 def scale_to(x, x_scalers, y_scalers, mode="linear"):

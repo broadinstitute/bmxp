@@ -52,7 +52,7 @@ def df_sample_info_2(path_sample_info_2):
 
 @pytest.fixture()
 def pickled_results():
-    return pickle.load(open(Path(__file__).parent / "blueshift.pickle", "rb"))
+    return pd.read_pickle(Path(__file__).parent / "blueshift.pickle")
 
 
 def test_data_validation(df_dc_input_1, df_sample_info_1):

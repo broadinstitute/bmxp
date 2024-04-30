@@ -9,7 +9,8 @@ import re
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
-from scipy import interpolate, stats
+from scipy import interpolate
+from bmxp import FMDATA, INJ_MDATA, POOL_INJ_TYPES
 
 __version__ = "0.0.3"
 
@@ -20,13 +21,11 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
     corrects sample signals using pooled reference sample or internal standard-based
     correction methods.
     """
-
     def __init__(
         self,
         raw_data,
         sample_information,
-        pool_names=("PREFA", "PREFB"),
-        met_col="Metabolite",
+        default_met_col = None
     ):
         """
         Initializes the DriftCorrection object with a dataset and corresponding sample
@@ -44,7 +43,10 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         self.pools = {}
         self.batches = {}
         self.correction_params = {}
-        self.met_col = met_col
+        if default_met_col:
+            self.met_col = default_met_col
+        else:
+            self.met_col = FMDATA['Metabolite']
 
         if not isinstance(raw_data, pd.DataFrame):
             raw_data = pd.read_csv(raw_data)
@@ -60,7 +62,7 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         self.rdata = self.data.copy()
         self.cvs = pd.DataFrame(index=self.rdata.index)
         self.sample_info = sample_information
-        self.pools, self.not_used_pools = self._find_pools(pool_names)
+        self.pools, self.not_used_pools = self._find_pools(POOL_INJ_TYPES)
         self.batches["default"], self.batches["override"] = self._gen_batches()
 
     def _validate_data(self, raw_data, sample_information):
@@ -72,11 +74,11 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         """
         # required columns in sample information
         required_columns = [
-            "injection_id",
-            "injection_type",
-            "column_number",
-            "injection_order",
-            "batches",
+            INJ_MDATA["injection_id"],
+            INJ_MDATA["injection_type"],
+            INJ_MDATA["column_number"],
+            INJ_MDATA["injection_order"],
+            INJ_MDATA["batches"],
         ]
         for col in required_columns:
             if col not in sample_information.columns:
@@ -86,47 +88,47 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         sample_information = sample_information.dropna(axis="index", how="all")
         has_col_name = ~raw_data.columns.str.startswith("Unnamed: ")
         raw_data = raw_data.loc[:, has_col_name]
-        sample_information["batches"] = sample_information["batches"].fillna("")
+        sample_information[INJ_MDATA["batches"]] = sample_information[INJ_MDATA["batches"]].fillna("")
         sample_information = sample_information.astype(
-            {"injection_type": str, "batches": str}
+            {INJ_MDATA["injection_type"]: str, INJ_MDATA["batches"]: str}
         )
 
         try:
-            sample_information = sample_information.astype({"injection_order": int})
+            sample_information = sample_information.astype({INJ_MDATA["injection_order"]: int})
         except ValueError as e:
             raise TypeError(
                 "There are missing or non-numeric values in the injection_order."
             ) from e
 
-        if not sample_information["injection_order"].is_unique:
+        if not sample_information[INJ_MDATA["injection_order"]].is_unique:
             raise ValueError("There are duplicate values in the injection_order.")
 
-        if not sample_information["injection_id"].is_unique:
+        if not sample_information[INJ_MDATA["injection_id"]].is_unique:
             raise ValueError("There are duplicate injection_ids.")
-        sample_information = sample_information.set_index("injection_id", drop=False)
+        sample_information = sample_information.set_index(INJ_MDATA["injection_id"], drop=False)
 
         if not (
-            sample_information.sort_values(by="injection_order").index
+            sample_information.sort_values(by=INJ_MDATA["injection_order"]).index
             == sample_information.index
         ).all():
             raise ValueError("Samples must be sorted in the order they were injected.")
 
         # check all data samples are in info, and get first sample
-        in_data = np.isin(sample_information["injection_id"], raw_data.columns)
+        in_data = np.isin(sample_information[INJ_MDATA["injection_id"]], raw_data.columns)
         if not (in_data).any():
             raise ValueError(
                 "There are no overlapping samples in your sample information and "
                 "sample data sheets."
             )
-        first_sample = sample_information.loc[in_data, "injection_id"].iloc[0]
+        first_sample = sample_information.loc[in_data, INJ_MDATA["injection_id"]].iloc[0]
         samples = raw_data.loc[:, first_sample:].columns
 
         # check that batch ends aren't on dropped samples
-        non_dc = sample_information["injection_type"].str.startswith(
+        non_dc = sample_information[INJ_MDATA["injection_type"]].str.startswith(
             tuple(["not_used", "brpp", "mm", "blank", "other"])
         )
         will_drop = ~in_data & non_dc
-        end_drops = sample_information.loc[will_drop, "batches"] == "batch end"
+        end_drops = sample_information.loc[will_drop, INJ_MDATA["batches"]] == "batch end"
         if sum(end_drops) > 0:
             raise ValueError(
                 "The 'batch end' label cannot be applied to injections that are "
@@ -134,13 +136,13 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
                 "to valid injections: "
                 + ", ".join(
                     sample_information.loc[
-                        end_drops.index[end_drops], "injection_id"
+                        end_drops.index[end_drops], INJ_MDATA["injection_id"]
                     ].values
                 )
             )
 
         # flag unused samples
-        sample_information.loc[will_drop, "QCRole"] = "NA"
+        sample_information.loc[will_drop, INJ_MDATA["QCRole"]] = "NA"
 
         if len(samples) > len(sample_information.loc[~will_drop]):
             raise ValueError(
@@ -149,19 +151,19 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
             )
 
         # check there aren't 'used' samples missing from data sheet
-        missing = ~np.isin(sample_information.loc[~will_drop, "injection_id"], samples)
+        missing = ~np.isin(sample_information.loc[~will_drop, INJ_MDATA["injection_id"]], samples)
         if missing.any():
             raise ValueError(
                 "The following samples are marked as usable but missing from your "
                 "data sheet: "
-                + ", ".join(sample_information.loc[~will_drop, "injection_id"][missing])
+                + ", ".join(sample_information.loc[~will_drop, INJ_MDATA["injection_id"]][missing])
             )
 
         # check they are in the same order
-        same = sample_information.loc[~will_drop, "injection_id"] == samples
+        same = sample_information.loc[~will_drop, INJ_MDATA["injection_id"]] == samples
         if not same.all():
             bad_sample = sample_information.loc[
-                ~will_drop & ~same, "injection_id"
+                ~will_drop & ~same, INJ_MDATA["injection_id"]
             ].iloc[0]
             raise ValueError(
                 f"Your usable samples do not match, starting with '{bad_sample}' "
@@ -210,22 +212,22 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         """
         pools = {}
         a, b = pool_names
-        info = self.sample_info.sort_values(by="injection_order")
+        info = self.sample_info.sort_values(by=INJ_MDATA["injection_order"])
 
         # identify pools based on sample type
         # non-case sensitive, for the time being
         pools[a] = info.loc[
-            info["injection_type"].str.lower() == a.lower(), "injection_id"
+            info[INJ_MDATA["injection_type"]].str.lower() == a.lower(), INJ_MDATA["injection_id"]
         ]
         pools[b] = info.loc[
-            info["injection_type"].str.lower() == b.lower(), "injection_id"
+            info[INJ_MDATA["injection_type"]].str.lower() == b.lower(), INJ_MDATA["injection_id"]
         ]
 
         # not used -- if it starts with "not_used" and contains a pool name
         not_used_pools = info.loc[
-            info["injection_type"].str.contains(f"{a}|{b}", case=False)
-            & info["injection_type"].str.startswith("not_used"),
-            "injection_id",
+            info[INJ_MDATA["injection_type"]].str.contains(f"{a}|{b}", case=False)
+            & info[INJ_MDATA["injection_type"]].str.startswith("not_used"),
+            INJ_MDATA["injection_id"],
         ]
 
         return pools, not_used_pools
@@ -245,54 +247,54 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         override_batches = []
 
         # accept "batch_end" and "batch end" as equivalent
-        self.sample_info["batches"] = self.sample_info["batches"].str.replace("_", " ")
-        for item in set(self.sample_info["batches"]):
+        self.sample_info[INJ_MDATA["batches"]] = self.sample_info[INJ_MDATA["batches"]].str.replace("_", " ")
+        for item in set(self.sample_info[INJ_MDATA["batches"]]):
             if item.lower() not in ("batch start", "batch end", ""):
                 raise ValueError(
                     f"An invalid label is present in the batches column: '{item}'. "
                     f"Valid batch labels are 'batch start' and 'batch end'."
                 )
 
-        valid = self.sample_info["QCRole"] != "NA"
+        valid = self.sample_info[INJ_MDATA["QCRole"]] != "NA"
 
         # default batches split by column number
-        for col in pd.unique(self.sample_info["column_number"]):
+        for col in pd.unique(self.sample_info[INJ_MDATA["column_number"]]):
             batch = self.sample_info.loc[
-                valid & (self.sample_info["column_number"] == col), "injection_id"
+                valid & (self.sample_info[INJ_MDATA["column_number"]] == col), INJ_MDATA["injection_id"]
             ]
             if len(batch) > 0:
                 default_batches.append(batch)
                 # label column ends as batch ends, whether the user has done so or not
-                self.sample_info.loc[batch.index[-1], "batches"] = "batch end"
+                self.sample_info.loc[batch.index[-1], INJ_MDATA["batches"]] = "batch end"
 
         # label very first injection as batch start, whether the user has done so or not
-        self.sample_info.loc[self.sample_info.index[0], "batches"] = "batch start"
+        self.sample_info.loc[self.sample_info.index[0], INJ_MDATA["batches"]] = "batch start"
 
         # override batches split by user-indicated batch end
         sample_info = self.sample_info[valid]
-        batch_info = sample_info["batches"].str.lower()
+        batch_info = sample_info[INJ_MDATA["batches"]].str.lower()
         ends = batch_info == "batch end"
         starts = np.roll(ends, 1)
 
         for start, end in zip(np.where(starts)[0], np.where(ends)[0]):
             this_batch = sample_info.iloc[start : end + 1, :]
-            override_batches.append(this_batch["injection_id"])
+            override_batches.append(this_batch[INJ_MDATA["injection_id"]])
 
-            if sample_info.loc[sample_info.index[start], "batches"] != "batch start":
+            if sample_info.loc[sample_info.index[start], INJ_MDATA["batches"]] != "batch start":
                 warn(
                     "The following sample is being used as a batch start but lacks a "
                     "'batch start' label: "
-                    + sample_info.loc[sample_info.index[start], "injection_id"]
+                    + sample_info.loc[sample_info.index[start], INJ_MDATA["injection_id"]]
                 )
 
-            contains_starts = np.where(this_batch["batches"] == "batch start")[0]
+            contains_starts = np.where(this_batch[INJ_MDATA["batches"]] == "batch start")[0]
             if (contains_starts > 0).any():
                 warn(
                     "The following samples are NOT being used as a batch start but "
                     "have a 'batch start' label: "
                     + ", ".join(
                         [
-                            this_batch.loc[this_batch.index[i], "injection_id"]
+                            this_batch.loc[this_batch.index[i], INJ_MDATA["injection_id"]]
                             for i in contains_starts
                             if i != 0
                         ]
@@ -317,8 +319,8 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
 
         is_nonquant = (
             np.array([False] * len(self.metadata))
-            if "Non_Quant" not in self.metadata.columns
-            else self.metadata["Non_Quant"].fillna(False)
+            if FMDATA["Non_Quant"] not in self.metadata.columns
+            else self.metadata[FMDATA["Non_Quant"]].fillna(False)
         )
         if not set(internal_standards).issubset(
             set(self.metadata.loc[~is_nonquant, self.met_col])
@@ -386,17 +388,17 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         # begin the scaling
         scalers = pd.DataFrame(index=self.data.index)
         data = self.data.values
-        self.cvs["Batches Skipped"] = [[] for _ in self.cvs.index]
+        self.cvs[FMDATA["Batches Skipped"]] = [[] for _ in self.cvs.index]
 
         self._flag_skipped_rows(pool, max_missing_percent, len(batches))
 
         for this_batch in batches:
             batch_pools = this_batch.loc[this_batch.isin(pool_names)]
             batch_pools = pd.DataFrame(batch_pools).join(
-                self.sample_info["injection_order"]
+                self.sample_info[INJ_MDATA["injection_order"]]
             )
             this_batch = pd.DataFrame(this_batch).join(
-                self.sample_info["injection_order"]
+                self.sample_info[INJ_MDATA["injection_order"]]
             )
 
             if len(batch_pools) == 0:
@@ -410,17 +412,17 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
             batch_scalers = []
             for row in tqdm(range(len(data))):
                 pool_values = data[row, np.isin(self.data.columns, batch_pools.index)]
-                pool_order = batch_pools["injection_order"].values[pool_values > 0]
+                pool_order = batch_pools[INJ_MDATA["injection_order"]].values[pool_values > 0]
                 pool_values = pool_values[pool_values > 0]
 
                 # skip if previously flagged
-                if self.cvs.loc[row, "Batches Skipped"] == "Not Pool Corrected":
+                if self.cvs.loc[row, FMDATA["Batches Skipped"]] == "Not Pool Corrected":
                     batch_scalers.append([pool_medians[row]] * len(this_batch))
 
                 # skip batch if there are no pools
                 elif len(pool_order) < 1:
                     batch_scalers.append([pool_medians[row]] * len(this_batch))
-                    self.cvs.loc[row, "Batches Skipped"].append(
+                    self.cvs.loc[row, FMDATA["Batches Skipped"]].append(
                         f"{this_batch.iloc[0,0]} to {this_batch.iloc[-1,0]}"
                     )
 
@@ -434,7 +436,7 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
                     )
 
             scalers = scalers.join(
-                pd.DataFrame(batch_scalers, columns=this_batch["injection_id"])
+                pd.DataFrame(batch_scalers, columns=this_batch[INJ_MDATA["injection_id"]])
             )
         scalers = scalers.divide(pool_medians, axis="index")
 
@@ -446,10 +448,10 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         for pool_list in self.pools.values():
             qc_pools.update(pool_list.index)
         qc_pools -= dc_pools
-        self.sample_info.loc[self.sample_info["QCRole"] != "NA", "QCRole"] = "Sample"
-        self.sample_info.loc[list(dc_pools), "QCRole"] = "QC-drift_correction"
-        self.sample_info.loc[list(qc_pools), "QCRole"] = "QC-pooled_ref"
-        self.sample_info.loc[self.not_used_pools.index, "QCRole"] = "QC-not_used"
+        self.sample_info.loc[self.sample_info[INJ_MDATA["QCRole"]] != "NA", INJ_MDATA["QCRole"]] = "Sample"
+        self.sample_info.loc[list(dc_pools), INJ_MDATA["QCRole"]] = "QC-drift_correction"
+        self.sample_info.loc[list(qc_pools), INJ_MDATA["QCRole"]] = "QC-pooled_ref"
+        self.sample_info.loc[self.not_used_pools.index, INJ_MDATA["QCRole"]] = "QC-not_used"
 
     def _flag_skipped_rows(self, pool, max_missing_percent, batch_count):
         pools = np.isin(self.data.columns, self.pools[pool])
@@ -461,7 +463,7 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
                 < (100 - max_missing_percent) / 100
                 or (batch_count < 2 and pool_count < 2)
             ):
-                self.cvs.loc[i, "Batches Skipped"] = "Not Pool Corrected"
+                self.cvs.loc[i, FMDATA["Batches Skipped"]] = "Not Pool Corrected"
 
     @staticmethod
     def _nn_interpolation(batch, pool_order, pool_values):
@@ -475,7 +477,7 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         :return: numpy ndarray, value of nearest neighbor for each sample in the batch
         """
 
-        nn_x = batch["injection_order"].values
+        nn_x = batch[INJ_MDATA["injection_order"]].values
         nn_interp = interpolate.interp1d(
             pool_order,
             pool_values,
@@ -499,7 +501,7 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         :return: numpy ndarray, linearly interpolated value for each sample in the batch
         """
 
-        linear_x = batch["injection_order"].values
+        linear_x = batch[INJ_MDATA["injection_order"]].values
         linear_y = np.interp(x=linear_x, xp=pool_order, fp=pool_values)
 
         return linear_y
@@ -543,8 +545,8 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
             self.cvs.insert(0, col, self.cvs.pop(col))
 
         # make skipped batches lists more readable
-        if "Batches Skipped" in self.cvs.columns:
-            self.cvs["Batches Skipped"] = self.cvs["Batches Skipped"].map(
+        if FMDATA["Batches Skipped"] in self.cvs.columns:
+            self.cvs[FMDATA["Batches Skipped"]] = self.cvs[FMDATA["Batches Skipped"]].map(
                 lambda x: ", ".join(x) if isinstance(x, list) else x
             )
 
