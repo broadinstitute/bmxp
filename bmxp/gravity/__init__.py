@@ -17,7 +17,6 @@ Pearson - Drop NaNs (Don't fill, call by_rt)
 
 """
 
-
 import logging
 import math
 from ctypes import CDLL, c_double, c_int32, c_void_p
@@ -27,6 +26,7 @@ import pandas as pd
 import networkx as nx
 import numpy as np
 from bmxp.gravity import fallback
+from bmxp import FMDATA
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
 correlation = None
@@ -69,19 +69,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.0.8"
-ECLIPSE_COLUMNS = [
-    "RT",
-    "MZ",
-    "Intensity",
-    "Non_Quant",
-    "Compound_ID",
-    "Adduct",
-    "Annotation_ID",
-    "Metabolite",
-    "Cluster_Num",
-    "Cluster_Size",
-]
+__version__ = "0.1.0"
 
 
 def free_p(p):
@@ -119,8 +107,10 @@ def spearman(x, y, nan_policy="fill", legacy_mode=False):
     return correlation.spearman(x, y, len(x), drop_nan, legacy_mode)
 
 
-def deconvolute(df_index, graph):
-    cluster_df = pd.DataFrame({"Cluster_Num": None, "Cluster_Size": 1}, index=df_index)
+def deconvolute(df_index, graph, fmdata):
+    num_label = fmdata["Cluster_Num"]
+    size_label = fmdata["Cluster_Size"]
+    cluster_df = pd.DataFrame({num_label: None, size_label: 1}, index=df_index)
     i = 0
     while True:
         # delete singletons
@@ -152,8 +142,8 @@ def deconvolute(df_index, graph):
             # add the best one
             best_clique = cliques[0]
             features = list(best_clique[0])
-            cluster_df.loc[features, "Cluster_Num"] = i
-            cluster_df.loc[features, "Cluster_Size"] = max_size
+            cluster_df.loc[features, num_label] = i
+            cluster_df.loc[features, size_label] = max_size
             if i % 50 == 0:
                 LOGGER.info(f"On cluster {i}, which contains {max_size} features.")
             i += 1
@@ -230,6 +220,7 @@ def cluster(
     method="spearman",
     nan_policy="fill",
     legacy_mode=False,
+    schema_labels=None,
 ):
     """
     Cluster aggregates LCMS features into groups based on sample-correlation and
@@ -249,9 +240,12 @@ def cluster(
     Dataframe, containing cluster number and number of members for each feature. -1
        indicates a single, unclustered feature.
     """
-    rt_series = df["RT"]
+    fmdata = FMDATA.copy()
+    if schema_labels is not None:
+        fmdata.update(schema_labels)
+    rt_series = df[fmdata["RT"]]
     rt_series.index.name = None  # otherwise it crashes during stack
-    sample_df = df.copy().drop(ECLIPSE_COLUMNS, axis=1, errors="ignore")
+    sample_df = df.copy().drop(list(fmdata.keys()), axis=1, errors="ignore")
 
     num_features = len(sample_df.index)
     graph = nx.Graph()
@@ -278,7 +272,7 @@ def cluster(
         graph.add_nodes_from(a_index)
         graph.add_nodes_from(b_index)
         graph.add_edges_from(edges)
-    return deconvolute(df.index, graph)
+    return deconvolute(df.index, graph, fmdata)
 
 
 if __name__ == "__main__":
