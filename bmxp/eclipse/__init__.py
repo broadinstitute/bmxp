@@ -23,7 +23,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.0.8"
+__version__ = "0.1.0"
 
 
 def dataset_loops(attr=None):
@@ -86,35 +86,61 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
     MSAligner stores 2 or more MS Datasets and performs matching, scaling, and
     alignments between them.
     """
-    descriptors = {FMDATA["RT"]: "linear", FMDATA["MZ"]: "ppm", "Intensity": "log10"}
+
+    # references FMDATA keys, not schema values
+    # values are evaluated in __init__
+    descriptors = {"RT": "linear", "MZ": "ppm", "Intensity": "log10"}
     default_cutoff = 6
     default_weight = 1
+    default_cutoffs = {}
+    default_weights = {}
     default_coarse_params = {
-        FMDATA["RT"]: {"upper": 0.5, "lower": -0.5},
-        FMDATA["MZ"]: {"upper": 15, "lower": -15},
-        FMDATA["Intensity"]: {"upper": 2, "lower": -2},
+        "RT": {"upper": 0.5, "lower": -0.5},
+        "MZ": {"upper": 15, "lower": -15},
+        "Intensity": {"upper": 2, "lower": -2},
     }
     default_scaler_params = {
         "smoothing_method": "lowess",
         "smoothing_params": {"frac": 0.1},
     }
-    feature_name = FMDATA["Compound_ID"]
-    intensity_col = FMDATA["Intensity"]
+    feature_name = "Compound_ID"
+    intensity_col = "Intensity"
 
-    def __init__(self, *args, names=None):
+    def __init__(self, *args, names=None, schema_labels=None):
         """
         Initializes the MSAligner object with a collection of datasets and their names.
 
         :param args: tuple[str], filepaths of .csv datasets
         :param names: list[str], names of datasets
         """
-        self.descriptors = MSAligner.descriptors
+
+        fmdata = FMDATA.copy()
+        if schema_labels is not None:
+            fmdata.update(schema_labels)
+
+        self.descriptors = {fmdata[k]: v for k, v in MSAligner.descriptors.items()}
         self.default_cutoff = MSAligner.default_cutoff
         self.default_weight = MSAligner.default_weight
-        self.default_coarse_params = MSAligner.default_coarse_params
+        self.default_weights = {
+            fmdata[k]: v for k, v in MSAligner.default_weights.items()
+        }
+        self.default_cutoffs = {
+            fmdata[k]: v for k, v in MSAligner.default_cutoffs.items()
+        }
+
+        # for k in MSAligner.descriptors:
+        #     if k not in MSAligner.default_weights:
+        if MSAligner.default_weights is None:
+            self.default_weights = {
+                fmdata[k]: self.default_weight for k in MSAligner.descriptors
+            }
+
+        self.default_coarse_params = {
+            fmdata[k]: v for k, v in MSAligner.default_coarse_params.items()
+        }
         self.default_scaler_params = MSAligner.default_scaler_params
-        self.feature_name = MSAligner.feature_name
-        self.intensity_col = MSAligner.intensity_col
+        self.feature_name = fmdata[MSAligner.feature_name]
+        self.intensity_col = fmdata[MSAligner.intensity_col]
         self.datasets = collections.OrderedDict()
         self.anchors = {}
         self.coarse_matches = {}
@@ -190,13 +216,19 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         for name in names:
             ds = self.datasets[name]
             # calculate intensity if needed
-            if self.intensity_col not in ds.columns and self.intensity_col in self.descriptors:
+            if (
+                self.intensity_col not in ds.columns
+                and self.intensity_col in self.descriptors
+            ):
                 gen_intensity(
                     ds,
                     self.intensity_col,
-                    ignore=[descr for descr in self.descriptors if descr != self.intensity_col]
-                    + [self.feature_name]
-
+                    ignore=[
+                        descr
+                        for descr in self.descriptors
+                        if descr != self.intensity_col
+                    ]
+                    + [self.feature_name],
                 )
 
             # Check required columns
@@ -205,23 +237,28 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                 if req_col not in ds.columns:
                     raise ValueError(f"Column {req_col} not found in dataset {name}.")
 
-    def set_defaults(self, params):
+    def set_instance_defaults(self, params):
         """
         Updates default values for weights and cutoffs.
         """
 
         for key, item in params.items():
-            # if key.lower() == "cutoffs":
-            #     self.default_cutoffs.update(item)
-            # elif key.lower() == "weights":
-            #     self.default_weights.update(item)
-            if key.lower() == "coarse_params":
+            if key.lower() == "weight":
+                self.default_weight = item
+            elif key.lower() == "cutoff":
+                self.default_cutoff = item
+            elif key.lower() == "weights":
+                self.default_weights.update(item)
+            elif key.lower() == "cutoffs":
+                self.default_cutoffs.update(item)
+            elif key.lower() == "coarse_params":
                 self.default_coarse_params.update(item)
             elif key.lower() == "scaler_params":
                 self.default_scaler_params.update(item)
             else:
                 raise KeyError(
                     f"Unknown value: {key}. Acceptable values are "
+                    " 'weight', 'weights', 'cutoff', 'cutoffs',"
                     " 'coarse_params' and 'scaler_params'."
                 )
 
@@ -773,11 +810,18 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
             try:
                 cutoffs[descr] = self.cutoffs[ds1][ds2][descr]
             except KeyError:
-                cutoffs[descr] = self.default_cutoff
+                try:
+                    cutoffs[descr] = self.default_cutoffs[descr]
+                except KeyError:
+                    cutoffs[descr] = self.default_cutoff
             try:
                 weights[descr] = self.weights[ds1][ds2][descr]
+
             except KeyError:
-                weights[descr] = self.default_weight
+                try:
+                    weights[descr] = self.default_weights[descr]
+                except KeyError:
+                    weights[descr] = self.default_weight
 
         self.matches[ds1][ds2] = score_match(
             self.scaled_values[ds1][ds2],
@@ -862,6 +906,65 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         return None
 
 
+def calc_scalers(x1, x2, smoothing=None, mode="linear", **kwargs):
+    """
+    Creates and returns scalers from X1 and X2 coordinates
+    i.e. Dataset 1 RTs - [7.1, 8.43, 9.5]
+         Dataset 2 RTs - [7.24, 8.74, 9.7]
+    Returns scalers in the proper space, e.g. log10 space for intensity, ppm for mz
+         Dataset 1 RTs -     [7.1, 8.43, 9.5]
+         Dataset 2 Scalers - [0.14, 0.31, 0.2]
+
+    :param x1: Array or List
+    :param x2: Array or List
+    :param smoothing: str, Smoothing mode (None or "lowess" currently)
+    :param mode: str, "linear" or "ppm"
+    :return: Numpy array
+    """
+    x1 = np.array(x1)
+    x2 = np.array(x2)
+
+    if mode == "linear":
+        y = x2 - x1
+    elif mode == "ppm":
+        y = (x2 - x1) / x1 * 1000000
+    elif mode == "log10":
+        y = np.log10(x2) - np.log10(x1)
+        x1 = np.log10(x1)
+    else:
+        raise NotImplementedError(f"We do not have a scaling method for {mode}.")
+    if smoothing is None:
+        return (x1, y)
+
+    # +/- <0.5 ppt random noise to break ties
+    np.random.seed(0)
+    noise = (np.random.random(size=len(x1)) - 0.5) * x1 / 10**12
+
+    # allow us to override frac via kwargs
+    temp_kwargs = kwargs.copy()
+    if "frac" not in temp_kwargs:
+        temp_kwargs["frac"] = 0.1
+
+    delta = 0.01 * (max(x1) - min(x1))
+    scalers = lowess(y, x1 + noise, return_sorted=False, delta=delta, **temp_kwargs)
+
+    # On failure, depending on statsmodels version, either returns NaNs, or
+    # the residuals. Try adding more until it works or reaches 1. On reaching 1,
+    # it should be obvious that smoothing failed or it is over smoothed.
+    while np.isnan(scalers).all() or np.array_equal(scalers, y):
+        temp_kwargs["frac"] += 0.01
+        if temp_kwargs["frac"] >= 1.0:
+            break
+        scalers = lowess(
+            y,
+            x1 + noise,
+            return_sorted=False,
+            delta=delta,
+            **temp_kwargs,
+        )
+    return (x1, scalers)
+
+
 def score_match(df1, df2, stds, descriptors, cutoffs, weights, top_n=1):
     """
     Returns scored best matches for a dataframe to another
@@ -924,65 +1027,6 @@ def score_match(df1, df2, stds, descriptors, cutoffs, weights, top_n=1):
         results.append([score for _, score in sorted(zip(scores, hits_index))][:top_n])
     results = pd.DataFrame(results, index=df1.index)
     return results
-
-
-def calc_scalers(x1, x2, smoothing=None, mode="linear", **kwargs):
-    """
-    Creates and returns scalers from X1 and X2 coordinates
-    i.e. Dataset 1 RTs - [7.1, 8.43, 9.5]
-         Dataset 2 RTs - [7.24, 8.74, 9.7]
-    Returns scalers in the proper space, e.g. log10 space for intensity, ppm for mz
-         Dataset 1 RTs -     [7.1, 8.43, 9.5]
-         Dataset 2 Scalers - [0.14, 0.31, 0.2]
-
-    :param x1: Array or List
-    :param x2: Array or List
-    :param smoothing: str, Smoothing mode (None or "lowess" currently)
-    :param mode: str, "linear" or "ppm"
-    :return: Numpy array
-    """
-    x1 = np.array(x1)
-    x2 = np.array(x2)
-
-    if mode == "linear":
-        y = x2 - x1
-    elif mode == "ppm":
-        y = (x2 - x1) / x1 * 1000000
-    elif mode == "log10":
-        y = np.log10(x2) - np.log10(x1)
-        x1 = np.log10(x1)
-    else:
-        raise NotImplementedError(f"We do not have a scaling method for {mode}.")
-    if smoothing is None:
-        return (x1, y)
-
-    # +/- <0.5 ppt random noise to break ties
-    np.random.seed(0)
-    noise = (np.random.random(size=len(x1)) - 0.5) * x1 / 10**12
-
-    # allow us to override frac via kwargs
-    temp_kwargs = kwargs.copy()
-    if "frac" not in temp_kwargs:
-        temp_kwargs["frac"] = 0.1
-
-    delta = 0.01 * (max(x1) - min(x1))
-    scalers = lowess(y, x1 + noise, return_sorted=False, delta=delta, **temp_kwargs)
-
-    # On failure, depending on statsmodels version, either returns NaNs, or
-    # the residuals. Try adding more until it works or reaches 1. On reaching 1,
-    # it should be obvious that smoothing failed or it is over smoothed.
-    while np.isnan(scalers).all() or np.array_equal(scalers, y):
-        temp_kwargs["frac"] += 0.01
-        if temp_kwargs["frac"] >= 1.0:
-            break
-        scalers = lowess(
-            y,
-            x1 + noise,
-            return_sorted=False,
-            delta=delta,
-            **temp_kwargs,
-        )
-    return (x1, scalers)
 
 
 def anchors(ds, match_params, remove_all=True, priority="Intensity"):
@@ -1078,10 +1122,11 @@ def simple_match(df1, df2, match_params):
 
         for result in df2.index[bool_array]:
             results.append([df1.index[i], result])
+
     return results
 
 
-def gen_intensity(dataset, intensity_col = "Intensity", ignore=None):
+def gen_intensity(dataset, intensity_col="Intensity", ignore=None):
     """
     calculate an intensity column, using all columns that are not named '
      RT','MZ','Compound_ID'

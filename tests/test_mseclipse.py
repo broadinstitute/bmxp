@@ -306,3 +306,59 @@ def test_dataset_selection(dataframe_1, dataframe_2, dataframe_3):
     a.align("HP1", "HP2")
     assert list(a.matches) == ["HP1"]
     assert list(a.matches["HP1"]) == ["HP2"]
+
+
+def test_schema(dataframe_1, dataframe_2):
+    dataframe_1 = dataframe_1.copy()
+    dataframe_2 = dataframe_2.copy()
+    schema_labels = {
+        "Compound_ID": "feature_id",
+        "RT": "rt (min)",
+        "MZ": "m/z",
+        "Intensity": "abundance",
+    }
+
+    a = ms.MSAligner(
+        dataframe_1.rename(columns=schema_labels),
+        dataframe_2.rename(columns=schema_labels),
+        names=["DS1", "DS2"],
+        schema_labels=schema_labels,
+    )
+    a.align()
+
+
+def test_instance_params(dataframe_1, dataframe_2, dataframe_3):
+    schema_labels = {"RT": "rt (min)"}
+    dataframe_1 = dataframe_1.copy().rename(columns=schema_labels)
+    dataframe_2 = dataframe_2.copy().rename(columns=schema_labels)
+    dataframe_3 = dataframe_3.copy().rename(columns=schema_labels)
+
+    a = ms.MSAligner(
+        dataframe_1,
+        dataframe_2,
+        dataframe_3,
+        names=["DS1", "DS2", "DS3"],
+        schema_labels=schema_labels,
+    )
+    a.descriptors = {"rt (min)": "linear", "MZ": "ppm"}
+    a.default_coarse_params["rt (min)"] = {"upper": 1.0, "lower": -1.0}
+    a.default_cutoff = 10
+    a.default_cutoffs = {"MZ": 6}
+    a.align()
+
+    a = ms.MSAligner(
+        dataframe_1,
+        dataframe_2,
+        dataframe_3,
+        names=["DS1", "DS2", "DS3"],
+        schema_labels=schema_labels,
+    )
+    a.descriptors = {"rt (min)": "linear", "MZ": "ppm"}
+    a.set_instance_defaults(
+        {
+            "coarse_params": {"rt (min)": {"upper": 1.0, "lower": -1.0}},
+            "cutoff": 10,
+            "cutoffs": {"MZ": 6},
+        }
+    )
+    a.align()
