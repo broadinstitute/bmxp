@@ -6,9 +6,9 @@ https://www.biorxiv.org/content/10.1101/2023.06.09.544417v1.full
 
 This is a collection of tools for processing our data, which powers our cloud processing workflow. Each tool is meant to be a standalone module that performs a step in our processing pipeline. They are written in Python and C, and designed to be perfomant and cloud-compatible.
 
-* [Eclipse](https://github.com/broadinstitute/bmxp/eclipse) - Align two or more same-method nontargeted LCMS datsets.
-* [Gravity](https://github.com/broadinstitute/bmxp/gravity) - Cluster redundant LCMS features based on RT and Correlation (And someday, XIC shape)
-* [Blueshift](https://github.com/broadinstitute/bmxp/blueshift) - Drift Correction via pooled technical replicates and internal standards
+* [Eclipse](https://github.com/broadinstitute/bmxp/blob/main/bmxp/eclipse/readme.md) - Align two or more same-method nontargeted LCMS datsets.
+* [Gravity](https://github.com/broadinstitute/bmxp/blob/main/bmxp/gravity/readme.md) - Cluster redundant LCMS features based on RT and Correlation (And someday, XIC shape)
+* [Blueshift](https://github.com/broadinstitute/bmxp/blob/main/bmxp/blueshift/readme.md) - Drift Correction via pooled technical replicates and internal standards
 
 In the future we will add:
 * Rawfilereader - Performant LCMS raw file reader (.mzml, .raw)
