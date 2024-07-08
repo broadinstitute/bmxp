@@ -8,6 +8,7 @@ import pytest
 import numpy as np
 import pandas as pd
 import bmxp.eclipse as ms
+import networkx as nx
 
 
 @pytest.fixture()
@@ -68,6 +69,29 @@ def pickled_ms():
             Path(__file__).parent / "mseclipse.pickle", "rb"
         )  # pylint: disable=consider-using-with
     )
+
+
+@pytest.fixture()
+def integration_data():
+    """
+    Load pickled file
+    """
+    pickles = []
+    datasets = []
+    for f in [
+        "full_cliques.pickle",
+        "ranked_cliques.pickle",
+        "all_cliques.pickle",
+        "1_non_clique.pickle",
+    ]:
+        df = pickle.load(
+            open(Path(__file__).parent / f, "rb")  # pylint: disable=consider-using-with
+        )
+        df = df.sort_values(by=["DS1", "DS2", "DS3", "DS4"]).reset_index(drop=True)
+        pickles.append(df)
+    for f in ["DS1.csv", "DS2.csv", "DS3.csv", "DS4.csv"]:
+        datasets.append(pd.read_csv(Path(__file__).parent / f))
+    return [pickles, datasets]
 
 
 def test_initialize_add(filepath_1, filepath_2, dataframe_1, dataframe_2):
@@ -178,6 +202,7 @@ def test_alignment_methods(dataframe_1, dataframe_2, pickled_ms):
     # Check that align passes
     a = ms.MSAligner(dataframe_1, dataframe_2, names=["HP1", "HP2"])
     a.align()
+    a.results()
 
     # Check that custom scalers are not overwritten
     rt = ms.calc_scalers([1, 2, 3], [1.1, 2.2, 3.3])
@@ -362,3 +387,211 @@ def test_instance_params(dataframe_1, dataframe_2, dataframe_3):
         }
     )
     a.align()
+
+
+@pytest.fixture()
+def graph():
+    """
+    Digraph for testing compression
+    """
+    graph = nx.DiGraph()
+    nodes = ["1__a", "2__a", "3__a", "4__a", "1__b", "2__b", "3__b", "4__b", "1__c"]
+    graph.add_nodes_from(nodes)
+    edges = [
+        ("1__a", "2__a", {"score": 0.5, "rank": 0}),  # kept
+        ("1__a", "3__a", {"score": 0.9, "rank": 0}),  # kept
+        ("1__a", "4__a", {"score": 2, "rank": 0}),  # kept
+        ("2__a", "1__a", {"score": 0.3, "rank": 0}),  # kept
+        ("2__a", "3__a", {"score": 0.1, "rank": 0}),  # kept
+        ("3__a", "1__a", {"score": 0.6, "rank": 0}),  # kept
+        ("3__a", "2__a", {"score": 0.1, "rank": 0}),  # kept
+        ("3__a", "4__a", {"score": 100, "rank": 0}),
+        ("1__b", "2__a", {"score": 100, "rank": 0}),
+        ("1__b", "3__b", {"score": 10, "rank": 0}),  # kept
+        ("2__b", "1__b", {"score": 100, "rank": 0}),
+        ("2__b", "3__a", {"score": 100, "rank": 0}),
+        ("3__b", "1__b", {"score": 11, "rank": 0}),  # kept
+        ("3__b", "2__b", {"score": 100, "rank": 0}),
+        ("4__b", "2__b", {"score": 100, "rank": 0}),
+        ("4__a", "1__a", {"score": 1, "rank": 0}),
+        ("1__c", "4__a", {"score": 100, "rank": 0}),
+    ]
+    graph.add_edges_from(edges)
+    return graph
+
+
+def test_compress_graph(graph):
+    """
+    Test graph compression
+    """
+
+    compressed = ms.MSAligner.compress_graph(graph)
+
+    # check nodes are present
+    assert set(compressed.nodes) == set(graph.nodes)
+
+    # check edges and weights
+    edges_weights = set(
+        frozenset([e[0], e[1], e[2]["score"]]) for e in compressed.edges(data=True)
+    )
+    assert edges_weights == {
+        frozenset(["1__a", "2__a", 0.3 + 0.5]),
+        frozenset(["2__a", "3__a", 0.1 + 0.1]),
+        frozenset(["3__a", "1__a", 0.6 + 0.9]),
+        frozenset(["4__a", "1__a", 1 + 2]),
+        frozenset(["1__b", "3__b", 10 + 11]),
+    }
+
+
+@pytest.fixture()
+def complex_compressed():
+    """
+    A complex feature graph
+    """
+    graph = nx.Graph()
+    nodes = [
+        ("1__a", {"dataset": 1}),
+        ("2__a", {"dataset": 2}),
+        ("3__a", {"dataset": 3}),
+        ("4__a", {"dataset": 4}),
+        ("5__a", {"dataset": 5}),
+        ("1__b", {"dataset": 1}),
+        ("2__b", {"dataset": 2}),
+        ("3__b", {"dataset": 3}),
+        ("4__b", {"dataset": 4}),
+        ("1__c", {"dataset": 1}),
+        ("2__c", {"dataset": 2}),
+        ("3__d", {"dataset": 3}),
+        ("4__c", {"dataset": 4}),
+    ]
+    graph.add_nodes_from(nodes)
+
+    edges = [
+        ("1__a", "2__a", {"score": 1}),
+        ("3__a", "2__a", {"score": 1}),
+        ("1__a", "3__a", {"score": 1}),
+        ("4__a", "5__a", {"score": 0.7}),
+        ("1__a", "5__a", {"score": 0.5}),
+        ("1__a", "4__a", {"score": 0.3}),
+        ("4__a", "2__b", {"score": 2}),
+        ("4__a", "3__b", {"score": 2}),
+        ("2__b", "3__b", {"score": 2}),
+        ("2__b", "1__b", {"score": 1}),
+        ("4__b", "1__b", {"score": 0.5}),
+        ("2__c", "1__b", {"score": 1}),
+        ("3__d", "1__b", {"score": 1}),
+        ("2__c", "3__d", {"score": 5}),
+        ("3__b", "1__c", {"score": 1}),
+        ("4__c", "1__c", {"score": 1}),
+        ("5__b", "3__d", {"score": 0.1}),
+        ("3__d", "4__b", {"score": 0.1}),
+        ("2__c", "4__b", {"score": 0.1}),
+        ("2__c", "5__b", {"score": 0.1}),
+        ("1__c", "2__b", {"score": 0.1}),
+    ]
+    graph.add_edges_from(edges)
+    return graph
+
+
+@pytest.fixture()
+def clique_compressed():
+    """
+    A simple clique graph
+    """
+    graph = nx.Graph()
+    nodes = [
+        ("1__a", {"dataset": 1}),
+        ("2__a", {"dataset": 2}),
+        ("3__a", {"dataset": 3}),
+    ]
+    graph.add_nodes_from(nodes)
+
+    edges = [
+        ("1__a", "2__a", {"score": 1}),
+        ("3__a", "2__a", {"score": 1}),
+        ("1__a", "3__a", {"score": 1}),
+    ]
+    graph.add_edges_from(edges)
+    return graph
+
+
+def test_deconvolution(complex_compressed, clique_compressed):
+    """
+    Test the deconvolution function
+    """
+    max_size = 3
+    # test it returns a full clique
+    result = ms.MSAligner.get_rank_groups(clique_compressed, max_size)
+    assert len(result) == 1
+
+    # test that it only reports 1 group
+    result = ms.MSAligner.get_rank_groups(clique_compressed, max_size, 1, 1, 2)
+    assert len(result) == 1
+
+    max_size = 5
+    # max cliques, 4, 3, >=1
+    result = ms.MSAligner.get_rank_groups(complex_compressed, max_size)
+    assert len(result) == 0
+    result = ms.MSAligner.get_rank_groups(complex_compressed, max_size, 4, 4, 1)
+    assert len(result) == 1
+    result = ms.MSAligner.get_rank_groups(complex_compressed, max_size, 3, 3, 1)
+    assert len(result) == 6
+    result = ms.MSAligner.get_rank_groups(complex_compressed, max_size, 1, 1, 1)
+    assert len(result) == 8
+
+    # test the settings return the correct, sorted cliques
+    expected = [
+        ({"5__b", "2__c", "4__b", "3__d", "1__b"}, 5, 4, 8, 0.9874999999999998),
+        ({"1__a", "3__a", "5__a", "2__a", "4__a"}, 5, 3, 6, 0.75),
+        ({"1__a", "5__a", "3__b", "4__a", "2__b"}, 5, 3, 6, 1.25),
+        ({"1__c", "2__b", "4__a", "3__b"}, 4, 3, 5, 1.42),
+        ({"3__d", "1__b", "4__b", "2__b"}, 4, 3, 4, 0.65),
+        ({"1__c", "4__c", "3__b", "2__b"}, 4, 3, 4, 1.025),
+        ({"3__b", "1__b", "4__a", "2__b"}, 4, 3, 4, 1.75),
+    ]
+    results = ms.MSAligner.get_rank_groups(complex_compressed, max_size, 1, 1, 2)
+    for i, r in enumerate(results):
+        for x, y in zip(r, expected[i]):
+            if isinstance(y, (float, int)):
+                assert np.isclose(x, y)
+            else:
+                assert x == y
+
+
+def test_integration(integration_data):
+    """
+    Tests alignment and 4 different aggregation methods
+    """
+    pickles = integration_data[0]
+    datasets = integration_data[1]
+
+    a = ms.MSAligner(*datasets, names=["DS1", "DS2", "DS3", "DS4"])
+    a.align()
+
+    results = a.results().loc[:, "DS1":"DS4"]
+    results = results.sort_values(by=["DS1", "DS2", "DS3", "DS4"]).reset_index(
+        drop=True
+    )
+    pickles[0].equals(results)
+
+    results = a.results(c_size_or_loss=1, g_size_or_loss=1).loc[:, "DS1":"DS4"]
+    results = results.sort_values(by=["DS1", "DS2", "DS3", "DS4"]).reset_index(
+        drop=True
+    )
+    pickles[1].equals(results)
+
+    results = a.results(c_size_or_loss=1, g_size_or_loss=1, remove_rerank=False).loc[
+        :, "DS1":"DS4"
+    ]
+    results = results.sort_values(by=["DS1", "DS2", "DS3", "DS4"]).reset_index(
+        drop=True
+    )
+    pickles[2].equals(results)
+
+    results = a.results(c_size_or_loss=3, g_size_or_loss=3, max_distance=2).loc[
+        :, "DS1":"DS4"
+    ]
+    results = results.sort_values(by=["DS1", "DS2", "DS3", "DS4"]).reset_index(
+        drop=True
+    )
+    pickles[3].equals(results)

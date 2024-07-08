@@ -15,10 +15,10 @@ module1 = Extension
 setup(
     name="bmxp",
     install_requires=REQUIREMENTS.split("\n"),
-    version="0.1.2",
+    version="0.1.3",
     description="LCMS Processing tools used by the Metabolomics Platform at the Broad"
     " Institute.",
-    packages=find_namespace_packages(include=["*"]),
+    packages=find_namespace_packages(include=["bmxp.*"]),
     license="MIT",
     author="Daniel S. Hitchcock",
     author_email="daniel.s.hitchcock@gmail.com",
