@@ -233,28 +233,97 @@ a.gen_matchs()
 print(a.matches["DS1"]["DS2"])
 ```
 
-Once the dataset is scaled, we can find best matches to a dataset in which it is being aligned. A window will be calculated (based on standard deviations), and features that fall in that window will be scored (again, based on standard deviations). The top n best matches will be recorded.
+Once the dataset is scaled, we can find best matches to a dataset in which it is being aligned. A window will be calculated (based on standard deviations), and features that fall in that window will be scored (again, based on standard deviations). The best match will be recorded (or top_n if necessary).
 
 ### Feature Aggregation Phase
-
 The whole alignment can be aggregated and deconvoluted with a single command:
 ```Python
-# subalignment match report
-a.report()
-
 # strict, default, must contain all members
+a.results()
+# or, write a csv also
 a.to_csv()
-
-# Dataset centric - reports all matches to a specified dataset
-# a.to_csv('DS1', union_only=False)
 ```
 
+Eclipse also have an expressive way to convert graph to tabular data. It can be overwhelming, but generally there are only 4 examples you will need. (See recipes below). There are two steps to making the tabular dataset: Graph Generation and Network Deconvolution.
+
 #### Network construction
+During network construction, the results for each subalignment are loaded as a directed graph, including the scores for the match (lower is better). The resulting graph can be exported or converted to tabular data.
+
 ```Python
 a.gen_graph()
 print(a.graph) # networkx graph
 ```
- This command builds a directed graph based on the subalignment matches. It can be exported, or deconvoluted
+ 
 
 #### Network deconvolution
-See the main heading, Feature Aggregation Phase
+Since a tabular dataset can not capture all the information in a graph, decisions must be made in how to report data. In short, the Eclipse algorithm works like this:
+1) Bidirectional matches have their individual scores summed, and are converted to non directional.
+2) Remaining directional matches (non-bidirectional) are deleted, leaving the graph with only matches.
+3) Iterating through non-connected subgroups, Eclipse identifies all valid groups, given criteria. The criteria are:
+   * `c_minimum_or_loss` - default 0 - Minimum clique size if positive, or #datasets+n if 0 or negative. The default of 0 ends up being the number of datasets.
+   * `g_minimum_or_loss` - default 0 - Minimum group size if positive, or #datasets+n if 0 or negative. The default of 0 ends up being the number of datasets.
+   * `max_distance` - default 1 - the maximum diameter (longest connection) allowed in a group. Default of 1 means only cliques can form.
+   * `remove_rerank` - default True - Prevents duplicate node matches. When a group is selected, it is recorded and the nodes are deleted, and the whole graph is again reranked. This prevents duplicates.
+4) The groups are then ranked according to: Group Size, Clique Size, average score.
+5) The features are either recorded (`remove_rerank=False`) or only the top is (`True`). If only the top, valid groups are again identified and ranked.
+   
+This can be a bit overwhelming, but generally there are only a few recipes.
+
+All groups must contain all members and they must form a clique:
+```python
+from bmxp.eclipse import MSAligner
+a = MSAligner('DS1.csv', 'DS2.csv', 'DS3.csv', 'DS4.csv') 
+a.align()
+a.to_csv() # Feature Aggregation Phase
+```
+
+All groups must contain all members, but neighbors are allowed as long as the graph diameter remains under 2. Ties are broken and no redundant features are reported.
+```python
+from bmxp.eclipse import MSAligner
+a = MSAligner('DS1.csv', 'DS2.csv', 'DS3.csv', 'DS4.csv')
+a.align()
+a.to_csv(max_distance=2)
+```
+
+Report all features with no redundancies, and group into cliques. All clique sizes are allowed (including singletons), but the group must form a clique. 
+```python
+from bmxp.eclipse import MSAligner
+a = MSAligner('DS1.csv', 'DS2.csv', 'DS3.csv', 'DS4.csv')
+a.align()
+a.to_csv(c_minimum_or_loss=1, g_minimum_or_loss=1)
+```
+
+Same as above, except we only want Dataset1 features
+```python
+from bmxp.eclipse import MSAligner
+a = MSAligner('DS1.csv', 'DS2.csv', 'DS3.csv', 'DS4.csv')
+a.align()
+a.to_csv('DS1.csv', c_minimum_or_loss=1, g_minimum_or_loss=1)
+```
+
+Keep all features, and Report all possible cliques, or just DS1 cliques
+```python
+from bmxp.eclipse import MSAligner
+a = MSAligner('DS1.csv', 'DS2.csv', 'DS3.csv', 'DS4.csv')
+a.align()
+# All features from all datasets
+a.to_csv('DS1.csv', remove_rerank=False, c_minimum_or_loss=1, g_minimum_or_loss=1, filepath='all.csv')
+
+# only DS1 features
+a.to_csv('DS1.csv', remove_rerank=False, c_minimum_or_loss=1, g_minimum_or_loss=1, filepath='DS1-only.csv')
+```
+
+We only want to see Dataset1 matches to others and we don't care about Dataset2-4 connectivity.
+(Note: Because of the hub/spoke nature of this alignment, max_distance=2 is required to lump groups together. This will not produce duplicates since ties cannot form in the hub/spoke)
+```python
+from bmxp.eclipse import MSAligner
+a = MSAligner('DS1.csv', 'DS2.csv', 'DS3.csv', 'DS4.csv') 
+a.align('DS1.csv', ['DS2.csv', 'DS3.csv', 'DS4.csv'])
+a.align(['DS2.csv', 'DS3.csv', 'DS4.csv'],'DS1.csv') 
+a.to_csv('DS1.csv', max_distance=2, c_minimum_or_loss=1, g_minimum_or_loss=1)
+```
+
+
+
+Pleas let us know if you need anotehr recipe or would like more information on the deconvolution algorithm.
+

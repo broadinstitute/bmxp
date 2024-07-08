@@ -96,7 +96,9 @@ a.to_csv(filepath="full_matches.csv")
 
 # Reports all cliques with a match to dataset 1
 # (Will likely have multiple matches)
-a.to_csv("DS1", filepath="DS1.csv", union_only=False)
+a.to_csv(
+    "DS1", filepath="DS1.csv", g_size_or_loss=1, c_size_or_loss=1, remove_rerank=False
+)
 
 
 ############
@@ -178,4 +180,4 @@ a.report(
     filepath="DS1_from.pdf",
 )
 
-a.to_csv("DS1", union_only=False)
+a.to_csv("DS1", g_size_or_loss=1, c_size_or_loss=1, remove_rerank=False)

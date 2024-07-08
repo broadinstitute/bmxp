@@ -3,6 +3,7 @@ MSEclipse is a LCMS dataset alignment package, designed to combine datasets whic
 been collected on the same method but perhaps on different instruments or columns.
 """
 # pylint: disable=too-many-lines
+from itertools import chain, combinations
 import copy
 import logging
 import collections
@@ -23,7 +24,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 def dataset_loops(attr=None):
@@ -148,6 +149,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         self.scaled_values = {}
         self.stds = {}
         self.matches = {}
+        self.scores = {}
         self.cutoffs = {}
         self.weights = {}
         self.coarse_params = {}
@@ -185,6 +187,11 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                     "Names must be provided if importing DataFrames directly."
                 )
             name = dataset
+
+        if "__" in name:
+            raise ValueError(
+                "Your dataset name (or filename) cannot contain double underscores."
+            )
 
         if not isinstance(dataset, pd.DataFrame):
             dataset = pd.read_csv(dataset)
@@ -576,20 +583,40 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                         self.scaler_params[ds2][ds1] = {}
                     self.scaler_params[ds2][ds1].update(scaler_params[ds1][ds2])
 
-    def to_csv(self, *args, filepath=None, union_only=True, to_bytes=False):
+    def to_csv(
+        self,
+        *args,
+        filepath=None,
+        to_bytes=False,
+        c_size_or_loss=0,
+        g_size_or_loss=0,
+        max_distance=1,
+        remove_rerank=True,
+    ):
         """
         Condenses network into a flat CSV file
         :param filepath, str, location to be saved
         :param *args, str, names of datasets that you want in the export file
-        :param, union_only, bool, only cliques with all datasets should be returned
+        :param, g_size_or_loss, int, minimum size of groups
+            (positive, or #datasets - if 0 or negative)
+        :param, c_size_or_loss, int, minimum size of clique
+            (positive, or #datasets - if 0 or negative)
+        :param, max_distance, int, specifies maximum distance to be in a group
+        :param, rank_and_remove, bool, True - removes nodes after adding to a group,
+            False - produces all combinations that aren't subsets of larger groups.
         """
 
         if len(args) < 1:
             targ_datasets = list(self.datasets)
         else:
             targ_datasets = list(args)
-
-        df = self.results(*targ_datasets, union_only=union_only)
+        df = self.results(
+            *targ_datasets,
+            c_size_or_loss=c_size_or_loss,
+            g_size_or_loss=g_size_or_loss,
+            max_distance=max_distance,
+            remove_rerank=remove_rerank,
+        )
         if to_bytes:
             bytes_csv = df.to_csv().encode()
             return io.BytesIO(bytes_csv)
@@ -598,7 +625,14 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         df.to_csv(filepath)
         return None
 
-    def results(self, *args, union_only=True):
+    def results(
+        self,
+        *args,
+        c_size_or_loss=0,
+        g_size_or_loss=0,
+        max_distance=1,
+        remove_rerank=True,
+    ):
         """
         Returns a results dataframe
         """
@@ -607,7 +641,13 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         else:
             targ_datasets = list(args)
 
-        df = self.produce_clique_table(targ_datasets, union_only)
+        df = self.deconvolute(
+            targ_datasets,
+            remove_rerank,
+            c_size_or_loss,
+            g_size_or_loss,
+            max_distance,
+        )
         for ds in df.columns:
             df = df.merge(
                 self.datasets[ds],
@@ -618,45 +658,182 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
             )
         return df
 
-    def compress_graph(self):
+    @staticmethod
+    def compress_graph(graph):
         """
         Compresses network into single highest rank non-directed graph
         """
-        graph = self.graph.copy()
+        graph = graph.copy()
         selected_edges = [(u, v) for u, v, e in graph.edges(data=True) if e["rank"] > 0]
         for edge in selected_edges:
             graph.remove_edge(*edge)
-        return graph.to_undirected(reciprocal=True)
+        compressed = graph.to_undirected(reciprocal=True)
 
-    def produce_clique_table(self, targ_datasets, union_only):
+        # clear edge weights and update
+        for u, v, d in compressed.edges(data=True):
+            compressed[u][v]["score"] = 0
+        for u, v, d in graph.edges(data=True):
+            if u in compressed.neighbors(v):
+                compressed[u][v]["score"] += d["score"]
+        return compressed
+
+    @staticmethod
+    def get_rank_groups(graph, max_size, c_size=None, g_size=None, max_distance=1):
+        """
+        Given a subgraph, ranks all possible groups based on provided info.
+        Returns a list of ({group members}, clique_size, group_size,
+        number of edges, avg edge weight)
+        Ranking is accomplished by sorting by group size, clique size,
+        number of edges, then edge weight (lowest to highest)
+        """
+
+        if c_size is None:
+            c_size = max_size
+
+        if g_size is None:
+            g_size = max_size
+
+        final_groups = []
+        all_groups = set()
+
+        # use cliques as seeds
+        for clique in nx.find_cliques(graph):
+            # check size of clique
+            if len(clique) < c_size:
+                continue
+
+            # get list of potential neighbors
+            valid_neighbors = set()
+            for node in clique:
+                new = set(nx.generators.ego_graph(graph, node, radius=max_distance - 1))
+                valid_neighbors.update(new)
+
+            # remove clique members from neighbors
+            valid_neighbors = valid_neighbors - set(clique)
+
+            # find list of how many neighbors we might add
+            min_needed = max(g_size - len(clique), 0)
+            max_possible = max_size - len(clique) + 1
+            numbers = list(range(min_needed, max_possible))
+
+            # make all possible combinations
+            for node_set in chain.from_iterable(
+                combinations(valid_neighbors, r) for r in numbers
+            ):
+                g = frozenset(set(clique).union(set(node_set)))
+
+                # skip if it's too small
+                if len(g) < g_size:
+                    continue
+
+                # skip if it contains two of the same datasets
+                group_ds = [feature_name.split("__")[0] for feature_name in g]
+                set_ds = set(group_ds)
+                if len(set_ds) != len(group_ds):
+                    continue
+
+                # skip if nodes are too distant
+                sg = graph.subgraph(g)
+                try:
+                    if nx.diameter(sg) > max_distance:
+                        continue
+                except nx.NetworkXError:
+                    continue
+                all_groups.add(g)
+
+        # remove subsets
+        filtered_groups = []
+        for g1 in all_groups:
+            for g2 in all_groups:
+                if g1 == g2:
+                    continue
+                if g1.issubset(g2):
+                    break
+            else:
+                filtered_groups.append(g1)
+
+        # score and return
+        for g in filtered_groups:
+            sg = graph.subgraph(g)
+            # score and record
+            if (sg.number_of_edges()) == 0:
+                weight = 0
+            else:
+                weight = (
+                    sum(data["score"] for _, _, data in sg.edges(data=True))
+                    / sg.number_of_edges()
+                )
+            max_clique_size = 0
+            for clique in nx.find_cliques(sg):
+                if len(clique) > max_clique_size:
+                    max_clique_size = len(clique)
+            final_groups.append(
+                (set(g), len(sg), max_clique_size, len(sg.edges()), weight)
+            )
+        final_groups = sorted(final_groups, key=lambda x: (-x[1], -x[2], -x[3], x[4]))
+        return final_groups
+
+    def deconvolute(
+        self,
+        datasets,
+        remove_rerank=True,
+        c_size_or_loss=0,
+        g_size_or_loss=0,
+        max_distance=1,
+    ):
         """
         Makes a dataframe where each row is a feature, and each column is a dataset
         Entry is null if there is no matching clique
         """
+        if g_size_or_loss <= 0:
+            g_size_or_loss = len(self.datasets) + g_size_or_loss
+        if c_size_or_loss <= 0:
+            c_size_or_loss = len(self.datasets) + c_size_or_loss
+
+        compressed = self.compress_graph(self.graph)
         df_indices = {ds: [] for ds in self.datasets}
-
-        for clique in nx.find_cliques(self.compress_graph()):
-            clique_ds = [feature_name.split("__")[0] for feature_name in clique]
-            if union_only:
-                if len(clique) >= len(targ_datasets):
-                    # Here targ_datasets must be subset of clique_ds
-                    if not all(ds in clique_ds for ds in targ_datasets):
-                        continue
-                else:
-                    continue
-            else:
-                # Here we want any value in the clique to be in targ_datasets
-                if not any(ds in targ_datasets for ds in clique_ds):
-                    continue
-
-            for df in df_indices.keys():
-                for feature in clique:
-                    ds_name, feature_name = feature.split("__")
-                    if ds_name == df:
-                        df_indices[df].append(feature_name)
+        results = []
+        for sg in nx.connected_components(compressed):
+            # skip graphs smaller than size
+            if len(sg) < g_size_or_loss:
+                continue
+            sg = compressed.subgraph(sg).copy()
+            if remove_rerank:
+                sg_results = []
+                while True:
+                    new = self.get_rank_groups(
+                        sg,
+                        len(self.datasets),
+                        c_size_or_loss,
+                        g_size_or_loss,
+                        max_distance,
+                    )
+                    if len(new) == 0:
                         break
-                else:
-                    df_indices[df].append(None)
+                    sg_results.append(new[0])
+                    sg.remove_nodes_from(new[0][0])
+            else:
+                sg_results = self.get_rank_groups(
+                    sg, len(self.datasets), c_size_or_loss, g_size_or_loss, max_distance
+                )
+
+            # remove those which don't have a dataset we're interested in
+            ds_filtered = []
+            for g in sg_results:
+                group_ds = [feature_name.split("__")[0] for feature_name in g[0]]
+                if len(set(datasets).intersection(group_ds)) >= 1:
+                    ds_filtered.append(g)
+
+            results.extend(ds_filtered)
+
+        # parse results
+        for row in results:
+            # add an empty row fore everything, then fill in with features
+            for df in df_indices.keys():
+                df_indices[df].append(None)
+            for feature in row[0]:
+                ds_name, feature_name = feature.split("__")
+                df_indices[ds_name][-1] = feature_name
         return pd.DataFrame.from_dict(df_indices)
 
     def align(self, ds1=None, ds2=None):
@@ -822,8 +999,10 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                     weights[descr] = self.default_weights[descr]
                 except KeyError:
                     weights[descr] = self.default_weight
+        if ds1 not in self.scores:
+            self.scores[ds1] = {}
 
-        self.matches[ds1][ds2] = score_match(
+        self.matches[ds1][ds2], self.scores[ds1][ds2] = score_match(
             self.scaled_values[ds1][ds2],
             self.datasets[ds2],
             self.stds[ds1][ds2],
@@ -838,23 +1017,24 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         Generates the network graph to be used for feature selection
         """
         LOGGER.info(f"Loading feature graph with {ds1} -> {ds2}...")
-        # adding all features to the graph
-        # If the node already exists (because it was added from a previous edge)\
-        # it does not overwrite based on my tests -JGP
-        nodes = []
         nodes = [f"{ds1}__{str(i)}" for i in self.datasets[ds1].index]
         self.graph.add_nodes_from(nodes)
 
         matches = self.matches[ds1][ds2]
+        scores = self.scores[ds1][ds2]
         edges = []
         for col in matches:
             this_match = matches[col][~pd.isnull(matches[col])]
+            edge_scores = scores[col][~pd.isnull(matches[col])].values
             sources = this_match.index
             sources = [ds1 + "__" + str(name) for name in sources]
             targets = this_match.values
             targets = [ds2 + "__" + str(name) for name in targets]
             edges.extend(
-                [tuple([s, t, {"rank": col}]) for s, t in zip(sources, targets)]
+                [
+                    tuple([s, t, {"rank": col, "score": score}])
+                    for s, t, score in zip(sources, targets, edge_scores)
+                ]
             )
         self.graph.add_edges_from(edges)
 
@@ -976,7 +1156,8 @@ def score_match(df1, df2, stds, descriptors, cutoffs, weights, top_n=1):
     :param top_n: Int, number of potential matches to record
     :return: Dataframe, df1 index as index, and matching df2 index in top_n columns
     """
-    results = []
+    results_indices = []
+    results_scores = []
 
     np1 = df1[list(descriptors)].values
     np2 = df2[list(descriptors)].values
@@ -1024,9 +1205,17 @@ def score_match(df1, df2, stds, descriptors, cutoffs, weights, top_n=1):
             )
 
         # append the top n
-        results.append([score for _, score in sorted(zip(scores, hits_index))][:top_n])
-    results = pd.DataFrame(results, index=df1.index)
-    return results
+        this_hit = []
+        this_score = []
+        for score, hit in sorted(zip(scores, hits_index))[:top_n]:
+            this_score.append(score)
+            this_hit.append(hit)
+        results_scores.append(this_score)
+        results_indices.append(this_hit)
+
+    return pd.DataFrame(results_indices, index=df1.index), pd.DataFrame(
+        results_scores, index=df1.index
+    )
 
 
 def anchors(ds, match_params, remove_all=True, priority="Intensity"):
@@ -1064,6 +1253,7 @@ def anchors(ds, match_params, remove_all=True, priority="Intensity"):
                 lower = descr_val + (descr_val / 1_000_000 * param["lower"])
                 upper = descr_val + (descr_val / 1_000_000 * param["upper"])
             elif param["mode"] == "log10":
+                descr_val = float(descr_val)
                 lower = descr_val * 10 ** param["lower"]
                 upper = descr_val * 10 ** param["upper"]
             bool_array = bool_array & (ds[:, j] > lower) & (ds[:, j] < upper)
