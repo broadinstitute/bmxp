@@ -16,7 +16,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 
 def report(dataset, dataset_name=None, out_filepath=None, write_pdf=True):
@@ -44,18 +44,18 @@ def report(dataset, dataset_name=None, out_filepath=None, write_pdf=True):
     # Find the index of the first non-missing value
     row = df.iloc[0, :].copy()
     row.replace("", np.nan, inplace=True)
-    pivot_col = row.first_valid_index()
+    pivot_col = df.columns.get_loc(row.first_valid_index())
 
     row = df.iloc[:, 0].copy()
     row.replace("", np.nan, inplace=True)
-    pivot_row = row.first_valid_index()
+    pivot_row = df.index.get_loc(row.first_valid_index())
 
     pivot_value = df.iloc[pivot_row, pivot_col].lower()
 
     if pivot_col < 0 or pivot_row < 0:
         raise ValueError("Your dataset is blank on either the first row or column.")
 
-    feature_metadata = df.iloc[pivot_row + 1 :, : pivot_col + 1]
+    feature_metadata = df.iloc[pivot_row + 1 :, : pivot_col + 1].copy()
     feature_metadata.columns = df.iloc[pivot_row, : pivot_col + 1]
 
     # check and create necessary columns
@@ -73,12 +73,19 @@ def report(dataset, dataset_name=None, out_filepath=None, write_pdf=True):
     feature_metadata.set_index("Compound_ID", drop=True, inplace=True)
     feature_metadata.columns.name = None
 
-    inj_metadata = df.iloc[: pivot_row + 1, pivot_col:]
+    inj_metadata = df.iloc[: pivot_row + 1, pivot_col:].copy()
     inj_metadata = inj_metadata.transpose().reset_index(drop=True)
     inj_metadata.columns = inj_metadata.iloc[0]
     inj_metadata = inj_metadata.drop(0)
     inj_metadata.columns = inj_metadata.columns.str.lower()
-
+    # makes column name unique - https://stackoverflow.com/questions/24685012
+    cols = pd.Series(inj_metadata.columns)
+    for dup in inj_metadata.columns[inj_metadata.columns.duplicated(keep=False)]:
+        cols[inj_metadata.columns.get_loc(dup)] = [
+            dup + "." + str(d_idx) if d_idx != 0 else dup
+            for d_idx in range(inj_metadata.columns.get_loc(dup).sum())
+        ]
+    inj_metadata.columns = cols
     # check and create necessary columns
     if "raw_file_name" not in inj_metadata.columns:
         raise ValueError("'raw_file_name' was not found in the sample metadata.")
@@ -97,6 +104,7 @@ def report(dataset, dataset_name=None, out_filepath=None, write_pdf=True):
         inj_metadata[sample_type] = inj_metadata[sample_type].fillna("")
 
     inj_metadata.set_index("raw_file_name", drop=True, inplace=True)
+    inj_metadata = inj_metadata.replace({"": float("nan"), "NA": float("nan")})
     inj_metadata = inj_metadata.convert_dtypes()
     # date_extracted usually does not convert to datetime correctly
     for date_type in ("date_extracted", "date_injected"):
@@ -130,9 +138,10 @@ def report(dataset, dataset_name=None, out_filepath=None, write_pdf=True):
         raise ValueError("Injection_order contains a non-numeric character.") from e
 
     sample_data = df.iloc[pivot_row + 1 :, pivot_col + 1 :]
-    sample_names = df.iloc[pivot_row, pivot_col + 1 :]
-    sample_data.columns = inj_metadata.index + " (" + sample_names + ")"
+    sample_names = df.iloc[pivot_row, pivot_col + 1 :].astype(str)
+    sample_data.columns = inj_metadata.index.astype(str) + " (" + sample_names + ")"
     sample_data.index = feature_metadata.index.copy()
+    sample_data = sample_data.replace("", "nan")
     sample_data = sample_data.astype(float)
     inj_metadata = inj_metadata.drop(pivot_value, axis=1)
 
@@ -680,8 +689,8 @@ def create_pools_cv_table(feature_metadata, pools, pdf):
         if col_name not in feature_metadata.columns:
             continue
 
-        ann_features_col = ann_features[col_name].dropna()
-        feature_met_col = feature_metadata[col_name].dropna()
+        ann_features_col = ann_features[col_name].replace("", float("nan")).dropna()
+        feature_met_col = feature_metadata[col_name].replace("", float("nan")).dropna()
         try:
             ann_features_col = ann_features_col.astype("float64")
             feature_met_col = feature_met_col.astype("float64")

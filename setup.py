@@ -15,7 +15,7 @@ module1 = Extension
 setup(
     name="bmxp",
     install_requires=REQUIREMENTS.split("\n"),
-    version="0.1.7",
+    version="0.1.8",
     description="LCMS Processing tools used by the Metabolomics Platform at the Broad"
     " Institute.",
     packages=find_namespace_packages(include=["*"]),
