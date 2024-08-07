@@ -1,4 +1,12 @@
-__version__ = "0.1.8"
+"""
+A collection of python tools used for processing datasets at the
+Metabolomics Platform at the Broad Institute. Includes
+* Gravity - Clustering features based on RT and Correlation
+* Eclipse - Alignment of nontargeted data
+* Blueshift - Drift Correction based on internal standards and pooled references
+* Formation - Formatting and QC of final datasets
+"""
+__version__ = "0.1.9"
 # Feature Metadata
 FMDATA = {
     # provided
