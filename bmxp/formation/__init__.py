@@ -18,7 +18,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 
 def report(
@@ -1253,6 +1253,11 @@ def combine(
     data = data.clip(lower=1).fillna(0)
     data = data.round(0).astype(np.int64)
     data = data.replace(0, np.nan)
+
+    # filter out any prefs that mess with the PCAs
+    if "prefs_to_remove" in form_params:
+        data = data.drop(columns=form_params["prefs_to_remove"])
+        injection_meta = injection_meta.drop(form_params["prefs_to_remove"])
 
     # keep additional columns but drop columns that are for internal use only
     additional_cols = [
