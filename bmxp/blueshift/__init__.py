@@ -12,7 +12,7 @@ from tqdm import tqdm
 from scipy import interpolate
 from bmxp import FMDATA, IMDATA, POOL_INJ_TYPES
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 class DriftCorrection:  # pylint: disable=too-many-instance-attributes
@@ -297,9 +297,9 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
                 self.sample_info.loc[batch.index[-1], self.batches_label] = "batch end"
 
         # label very first injection as batch start, whether the user has done so or not
-        self.sample_info.loc[
-            self.sample_info.index[0], self.batches_label
-        ] = "batch start"
+        self.sample_info.loc[self.sample_info.index[0], self.batches_label] = (
+            "batch start"
+        )
 
         # override batches split by user-indicated batch end
         sample_info = self.sample_info[valid]
@@ -486,9 +486,9 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         for pool_list in self.pools.values():
             qc_pools.update(pool_list.index)
         qc_pools -= dc_pools
-        self.sample_info.loc[
-            self.sample_info[self.QCRole] != "NA", self.QCRole
-        ] = "Sample"
+        self.sample_info.loc[self.sample_info[self.QCRole] != "NA", self.QCRole] = (
+            "Sample"
+        )
         self.sample_info.loc[list(dc_pools), self.QCRole] = "QC-drift_correction"
         self.sample_info.loc[list(qc_pools), self.QCRole] = "QC-pooled_ref"
         self.sample_info.loc[self.not_used_pools.index, self.QCRole] = "QC-not_used"

@@ -23,8 +23,8 @@ from ctypes import CDLL, c_double, c_int32, c_void_p
 import os
 import platform
 import pandas as pd
-import networkx as nx
 import numpy as np
+import networkx as nx
 from bmxp.gravity import fallback
 from bmxp import FMDATA
 
@@ -69,7 +69,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 def free_p(p):

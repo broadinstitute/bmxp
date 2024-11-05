@@ -1,6 +1,6 @@
 # MSEclipse
 
-MSEclipse is a library that finds corresponding features in same-method LC-MS datasets. It accomplishes this by breaking the whole alignment own into individual directed subalignments, loading the results into a graph, then deconvoluting this graph to produce a results table.
+MSEclipse is a library that finds corresponding features in same-method LC-MS datasets, or different gradients with a new prescaling (v. 0.2.1) are used. It accomplishes this by breaking the whole alignment own into individual directed subalignments, loading the results into a graph, then deconvoluting this graph to produce a results table.
 
 ## Quick use
 1. Install with `pip install bmxp` (requires Python 3)
@@ -129,6 +129,60 @@ a.align()
 ```
 The equivalent reverse (DS2->DS1, DS3->DS1) will be applied by default. It's a bit messy, but the only way for granular control over subalignments.
 
+##### (New!) Prescaling to allow for different LCMS gradients
+If DS1 had a gradient of 10 minutes, Dataset 2 15 minutes, and Dataset 3 20 minutes, prescaling would need to be used. If possible, try to identify ~5 features that are spread along the gradient. Let's say their RTs look like this:
+
+|  | DS1-RT | DS2-Rt | DS3-Rt |
+| --- | ----- | ------ | ------ |
+| Feature1 | 1 | 1.1 | 1.2 |
+| Feature2 | 3 | 4 | 6 |
+| Feature3 | 5 | 7 | 10 |
+| Feature4 | 6 | 9 | 11 |
+| Feature5 | 9.5 | 13 | 18 |
+
+prescalers can be set like:
+```python
+from bmxp.eclipse import MSAligner
+a = MSAligner('DS1.csv', 'DS2.csv', 'DS3.csv', names=['DS1', 'DS2','DS3'])
+DS1_features = pd.Series([1, 3, 5, 6, 9.5])
+DS2_features = pd.Series([1.1, 4, 7, 9, 13])
+DS3_features = pd.Series([1.2, 6, 10, 13, 18])
+
+a.set_prescalers({
+    # DS1 does not need to be set since it's being used as the prescaling reference
+    'DS2': {
+        'RT': [DS2_features, DS1_features-DS2_features]
+    },
+    'DS3': {
+        'RT': [DS3_features, DS1_features-DS3_features]
+    }
+})
+a.align()
+```
+Now two and three will be shifted earlier, and Eclipse will attempt to further scale them. If you're confident in the linearity of your chromatography, you can try just the gradients, like
+```python
+DS1_gradient = pd.Series([1, 10])
+DS2_gradient = pd.Series([1, 15])
+DS3_gradient = pd.Series([1, 20])
+```
+This also works for any other descriptors, not that I can imagine why it would be needed. Anyways,
+```python
+ds1_mz = pd.Series([100.0001, 200.0002])
+ds2_mz = pd.Series([100.0002, 200.0005])
+a.set_prescalers({
+    'DS2': {
+        'MZ': [ds2, (ds1-ds2)/ds2*1000000] # must be in ppm since MZ default mode is PPM
+    }
+})
+# or 
+ds1_intensity = pd.Series([1000, 1_000_000])
+ds2_intensity = pd.Series([100238, 12_000_000])
+a.set_prescalers({
+    'DS2': {
+        'Intensity': [ds2_intensity, np.log10(ds1_intensity/ds2_intensity)] # must be in log10 since the default mode is log10 for intensity
+    }
+})
+```
 #### Datasets are loaded
 Any number of datasets can be loaded. Loading over 10 datasets might require changing subalignment from all-to-all to one-to-all.
 #### Anchors are determined
@@ -196,7 +250,7 @@ DS1 Scalers:
 RTx: 1.0, 2.0, 3.0, 4.0, 5.0
 Rty: 0.1, 0.2, 0.1, 0.2, 0.1
 ```
-Positive Y-values indicate that the source dataset has lower/smaller values than the target. 
+Positive Y-values indicate that the source dataset has lower/smaller values than the target, i.e. the scalers are instructions on how to adjust the data.
 
 In the reverse subalignment (DS2->DS1), the DS2 scalers determined are similar **but not identical**. 
 ```
@@ -269,7 +323,7 @@ Since a tabular dataset can not capture all the information in a graph, decision
    
 This can be a bit overwhelming, but generally there are only a few recipes.
 
-All groups must contain all members and they must form a clique:
+We want only groups that contain all members, and they must form a clique (default max_distance = 1).
 ```python
 from bmxp.eclipse import MSAligner
 a = MSAligner('DS1.csv', 'DS2.csv', 'DS3.csv', 'DS4.csv') 
@@ -277,7 +331,7 @@ a.align()
 a.to_csv() # Feature Aggregation Phase
 ```
 
-All groups must contain all members, but neighbors are allowed as long as the graph diameter remains under 2. Ties are broken and no redundant features are reported.
+We want only groups that contain all members, but one node may have neighbors since the distance is set to 2. Ties are broken and no redundant features are reported.
 ```python
 from bmxp.eclipse import MSAligner
 a = MSAligner('DS1.csv', 'DS2.csv', 'DS3.csv', 'DS4.csv')
@@ -285,7 +339,7 @@ a.align()
 a.to_csv(max_distance=2)
 ```
 
-Report all features with no redundancies, and group into cliques. All clique sizes are allowed (including singletons), but the group must form a clique. 
+Report all features with no redundancies, and only allow cliques. 
 ```python
 from bmxp.eclipse import MSAligner
 a = MSAligner('DS1.csv', 'DS2.csv', 'DS3.csv', 'DS4.csv')

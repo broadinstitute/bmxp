@@ -1,6 +1,7 @@
 """
 A quick example on how to use Gravity
 """
+
 import pandas as pd
 from bmxp.gravity import cluster
 

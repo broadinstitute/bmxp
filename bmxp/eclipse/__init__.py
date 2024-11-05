@@ -2,15 +2,16 @@
 MSEclipse is a LCMS dataset alignment package, designed to combine datasets which have
 been collected on the same method but perhaps on different instruments or columns.
 """
+
 # pylint: disable=too-many-lines
 from itertools import chain, combinations
 import copy
 import logging
 import collections
 import io
-import networkx as nx
 import numpy as np
 import pandas as pd
+import networkx as nx
 from scipy import interpolate
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
@@ -24,7 +25,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.1.1"
+__version__ = "0.2.1"
 
 
 def dataset_loops(attr=None):
@@ -155,6 +156,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         self.coarse_params = {}
         self.scaler_params = {}
         self.multipliers = {}
+        self.prescalers = {}
         self.graph = nx.DiGraph()
         self.remove_all = True
         # convert names to a list if not supplied
@@ -383,6 +385,32 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                     raise NotImplementedError(
                         "Not sure how to reverse scale the mode ", self.descriptors[k]
                     )
+
+    def set_prescalers(self, prescalers):
+        """
+        Dict containing datasets and descriptors providing the dataset and
+        the instructions to be applied.
+        Five spread across the gradient should be plenty.
+        This will shift DS1 RTs earlier, since the instructions are negative
+        {
+            'DS1': {
+                'RT': [[1, 5, 10], [0, -0.2, -0.3]]
+            }
+        }
+        """
+        self.prescalers = {}
+        for dataset in prescalers:
+            self.prescalers[dataset] = {}
+            for descriptor in prescalers[dataset]:
+                if descriptor not in self.descriptors:
+                    raise KeyError(
+                        f"Your prescaler descriptor {descriptor} is not present as a "
+                        "descriptor."
+                    )
+                self.prescalers[dataset][descriptor] = [
+                    pd.Series(prescalers[dataset][descriptor][0]),
+                    pd.Series(prescalers[dataset][descriptor][1]),
+                ]
 
     def set_cutoffs(self, cutoffs, rec=True):
         """
@@ -693,58 +721,37 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         if g_size is None:
             g_size = max_size
 
-        final_groups = []
-        all_groups = set()
-
         # use cliques as seeds
-        for clique in nx.find_cliques(graph):
-            # check size of clique
-            if len(clique) < c_size:
-                continue
+        cliques = set(
+            frozenset(clique)
+            for clique in nx.find_cliques(graph)
+            if len(clique) >= c_size
+        )
 
-            # get list of potential neighbors
-            valid_neighbors = set()
-            for node in clique:
-                new = set(nx.generators.ego_graph(graph, node, radius=max_distance - 1))
-                valid_neighbors.update(new)
+        potential_groups = set()
 
-            # remove clique members from neighbors
-            valid_neighbors = valid_neighbors - set(clique)
-
-            # find list of how many neighbors we might add
-            min_needed = max(g_size - len(clique), 0)
-            max_possible = max_size - len(clique) + 1
-            numbers = list(range(min_needed, max_possible))
-
-            # make all possible combinations
-            for node_set in chain.from_iterable(
-                combinations(valid_neighbors, r) for r in numbers
-            ):
-                g = frozenset(set(clique).union(set(node_set)))
-
-                # skip if it's too small
-                if len(g) < g_size:
-                    continue
-
-                # skip if it contains two of the same datasets
-                group_ds = [feature_name.split("__")[0] for feature_name in g]
-                set_ds = set(group_ds)
-                if len(set_ds) != len(group_ds):
-                    continue
-
-                # skip if nodes are too distant
-                sg = graph.subgraph(g)
-                try:
-                    if nx.diameter(sg) > max_distance:
-                        continue
-                except nx.NetworkXError:
-                    continue
-                all_groups.add(g)
-
+        if max_distance == 1:
+            potential_groups = cliques
+        else:
+            for clique in cliques:
+                if max_distance == 2:
+                    # Try adding each nodes neighbors
+                    neighbors = {
+                        node: set(graph.neighbors(node)) - clique for node in clique
+                    }
+                    potential_groups.update(
+                        set(
+                            frozenset(clique.union(neighbors[node]))
+                            for node in clique
+                            if len(clique.union(neighbors[node])) >= g_size
+                        )
+                    )
+                if max_distance == 3:
+                    raise NotImplementedError("Not implemented for diameter > 2")
         # remove subsets
         filtered_groups = []
-        for g1 in all_groups:
-            for g2 in all_groups:
+        for g1 in potential_groups:
+            for g2 in potential_groups:
                 if g1 == g2:
                     continue
                 if g1.issubset(g2):
@@ -753,6 +760,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                 filtered_groups.append(g1)
 
         # score and return
+        final_groups = []
         for g in filtered_groups:
             sg = graph.subgraph(g)
             # score and record
@@ -790,41 +798,47 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         if c_size_or_loss <= 0:
             c_size_or_loss = len(self.datasets) + c_size_or_loss
 
-        compressed = self.compress_graph(self.graph)
+        # compressed = self.compress_graph(self.graph)
         df_indices = {ds: [] for ds in self.datasets}
         results = []
-        for sg in nx.connected_components(compressed):
+        for dsg in nx.weakly_connected_components(self.graph):
             # skip graphs smaller than size
-            if len(sg) < g_size_or_loss:
+            if len(dsg) < g_size_or_loss:
                 continue
-            sg = compressed.subgraph(sg).copy()
-            if remove_rerank:
+            compressed = self.compress_graph(self.graph.subgraph(dsg))
+            for sg in nx.connected_components(compressed):
+                sg = compressed.subgraph(sg).copy()
                 sg_results = []
-                while True:
-                    new = self.get_rank_groups(
+                if remove_rerank:
+                    while True:
+                        new = self.get_rank_groups(
+                            sg,
+                            len(self.datasets),
+                            c_size_or_loss,
+                            g_size_or_loss,
+                            max_distance,
+                        )
+                        if len(new) == 0:
+                            break
+                        sg_results.append(new[0])
+                        sg.remove_nodes_from(new[0][0])
+                else:
+                    sg_results = self.get_rank_groups(
                         sg,
                         len(self.datasets),
                         c_size_or_loss,
                         g_size_or_loss,
                         max_distance,
                     )
-                    if len(new) == 0:
-                        break
-                    sg_results.append(new[0])
-                    sg.remove_nodes_from(new[0][0])
-            else:
-                sg_results = self.get_rank_groups(
-                    sg, len(self.datasets), c_size_or_loss, g_size_or_loss, max_distance
-                )
 
-            # remove those which don't have a dataset we're interested in
-            ds_filtered = []
-            for g in sg_results:
-                group_ds = [feature_name.split("__")[0] for feature_name in g[0]]
-                if len(set(datasets).intersection(group_ds)) >= 1:
-                    ds_filtered.append(g)
+                # remove those which don't have a dataset we're interested in
+                ds_filtered = []
+                for g in sg_results:
+                    group_ds = [feature_name.split("__")[0] for feature_name in g[0]]
+                    if len(set(datasets).intersection(group_ds)) >= 1:
+                        ds_filtered.append(g)
 
-            results.extend(ds_filtered)
+                results.extend(ds_filtered)
 
         # parse results
         for row in results:
@@ -840,6 +854,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         """
         Performs all steps for generating the network
         """
+
         self.gen_anchors(ds1, ds2)
         self.gen_coarse(ds1, ds2)
         self.gen_scalers(ds1, ds2)
@@ -848,11 +863,41 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         self.gen_matches(ds1, ds2)
         self.gen_graph(ds1, ds2)
 
+    def prescale(self):
+        """
+        Prescales all datasets
+        """
+        for ds in self.datasets:
+            if ds not in self.prescalers:
+                continue
+            df = self.datasets[ds]
+            for descriptor in self.descriptors:
+                if descriptor not in self.prescalers[ds]:
+                    continue
+                prescalers = self.prescalers[ds][descriptor]
+                try:
+                    descriptor_col = df.columns.get_loc(descriptor)
+                except KeyError as e:
+                    raise KeyError(
+                        f"The descriptor {descriptor} was not found in dataset {ds}."
+                    ) from e
+                if f"{descriptor}_Original" not in df.columns:
+                    df.insert(
+                        descriptor_col + 1, f"{descriptor}_Original", df[descriptor]
+                    )
+                df[descriptor] = scale_to(
+                    df[f"{descriptor}_Original"],
+                    prescalers[0],
+                    prescalers[1],
+                    self.descriptors[descriptor],
+                )
+
     def gen_anchors(self, ds1=None, ds2=None):
         """
         Creates and sets anchors for all datasets specified.
         If either ds1 or ds2 is None, calculates anchors fall all datasets.
         """
+        self.prescale()
         if ds1 is None or ds2 is None:
             datasets = self.datasets
         else:
@@ -887,6 +932,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
             coarse_params.update(self.coarse_params[ds1][ds2])
         except KeyError:
             pass
+
         # remove coarse params which aren't in the descriptors
         coarse_params = copy.deepcopy({k: coarse_params[k] for k in self.descriptors})
         for descr_param in coarse_params:
@@ -1019,7 +1065,6 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         LOGGER.info(f"Loading feature graph with {ds1} -> {ds2}...")
         nodes = [f"{ds1}__{str(i)}" for i in self.datasets[ds1].index]
         self.graph.add_nodes_from(nodes)
-
         matches = self.matches[ds1][ds2]
         scores = self.scores[ds1][ds2]
         edges = []
