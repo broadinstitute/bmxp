@@ -6,7 +6,8 @@ Metabolomics Platform at the Broad Institute. Includes
 * Blueshift - Drift Correction based on internal standards and pooled references
 * Formation - Formatting and QC of final datasets
 """
-__version__ = "0.1.10"
+
+__version__ = "0.2.2"
 # Feature Metadata
 FMDATA = {
     # provided

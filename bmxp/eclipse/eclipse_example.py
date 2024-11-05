@@ -1,4 +1,5 @@
 """Module from __init__.py"""
+
 from bmxp.eclipse import MSAligner
 
 
