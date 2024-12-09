@@ -1,2 +1,3 @@
 .idea
 bmxp.egg-info
+*.pyc

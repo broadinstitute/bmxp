@@ -4,11 +4,11 @@ Tests for MSEclipse
 """
 from pathlib import Path
 import pickle
-import pytest
 import numpy as np
 import pandas as pd
 import bmxp.eclipse as ms
 import networkx as nx
+import pytest
 
 
 @pytest.fixture()
@@ -476,7 +476,6 @@ def complex_compressed():
         ("4__a", "2__b", {"score": 2}),
         ("4__a", "3__b", {"score": 2}),
         ("2__b", "3__b", {"score": 2}),
-        ("2__b", "1__b", {"score": 1}),
         ("4__b", "1__b", {"score": 0.5}),
         ("2__c", "1__b", {"score": 1}),
         ("3__d", "1__b", {"score": 1}),
@@ -537,7 +536,7 @@ def test_deconvolution(complex_compressed, clique_compressed):
     result = ms.MSAligner.get_rank_groups(complex_compressed, max_size, 3, 3, 1)
     assert len(result) == 6
     result = ms.MSAligner.get_rank_groups(complex_compressed, max_size, 1, 1, 1)
-    assert len(result) == 8
+    assert len(result) == 7
 
     # test the settings return the correct, sorted cliques
     expected = [
@@ -545,7 +544,6 @@ def test_deconvolution(complex_compressed, clique_compressed):
         ({"1__a", "3__a", "5__a", "2__a", "4__a"}, 5, 3, 6, 0.75),
         ({"1__a", "5__a", "3__b", "4__a", "2__b"}, 5, 3, 6, 1.25),
         ({"1__c", "2__b", "4__a", "3__b"}, 4, 3, 5, 1.42),
-        ({"3__d", "1__b", "4__b", "2__b"}, 4, 3, 4, 0.65),
         ({"1__c", "4__c", "3__b", "2__b"}, 4, 3, 4, 1.025),
         ({"3__b", "1__b", "4__a", "2__b"}, 4, 3, 4, 1.75),
     ]

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools >= 66.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bmxp"
+description = "LCMS Processing tools used by the Metabolomics Platform at the Broad Institute."
+license = {text = "MIT"}
+authors = [
+    {name = "Daniel S. Hitchcock"},
+    {name = "Jesse Krejci"},
+    {name = "Jayanth Mani"},
+    {name = "Chloe Sturgeon"},
+    {name = "Daniel S. Hitchcock", email = "daniel.s.hitchcock@gmail.com"},
+]
+readme = "README.md"
+keywords = [
+    "LCMS",
+    "Alignment",
+    "Processing",
+    "Metabolomics",
+    "Clustering",
+    "Batch Correction",
+    "Drift Correction",
+    "QC",
+    "Filtering",
+]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+dynamic = ["dependencies", "version"]
+
+[project.urls]
+Repository = "https://github.com/broadinstitute/bmxp"
+
+[tool.setuptools.dynamic]
+dependencies = {file=["requirements.txt"]}
+version = {attr = "bmxp.__version__"}
