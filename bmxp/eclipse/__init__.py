@@ -12,6 +12,7 @@ import io
 import numpy as np
 import pandas as pd
 import networkx as nx
+import textwrap
 from scipy import interpolate
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
@@ -25,7 +26,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 
 def dataset_loops(attr=None):
@@ -107,6 +108,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
     }
     feature_name = "Compound_ID"
     intensity_col = "Intensity"
+    annotation_col = "Annotation_ID"
 
     def __init__(self, *args, names=None, schema_labels=None):
         """
@@ -143,6 +145,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         self.default_scaler_params = MSAligner.default_scaler_params
         self.feature_name = fmdata[MSAligner.feature_name]
         self.intensity_col = fmdata[MSAligner.intensity_col]
+        self.annotation_col = fmdata[MSAligner.annotation_col]
         self.datasets = collections.OrderedDict()
         self.anchors = {}
         self.coarse_matches = {}
@@ -747,7 +750,13 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                         )
                     )
                 if max_distance == 3:
-                    raise NotImplementedError("Not implemented for diameter > 2")
+                    # add all of the node's neighbors
+                    neighbors = set(clique)
+                    for node in clique:
+                        neighbors.update(set(graph.neighbors(node)))
+                    if len(neighbors) >= g_size:
+                        potential_groups.add(frozenset(neighbors))
+
         # remove subsets
         filtered_groups = []
         for g1 in potential_groups:
@@ -1107,6 +1116,19 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         else:
             file_handle = filepath
 
+        # format plot text
+        (
+            title_wrap_width,
+            x_label_wrap_width,
+            y_label_wrap_width,
+            plot_padding,
+        ) = (
+            55,
+            65,
+            40,
+            1,
+        )
+
         # create scaling report
         with PdfPages(file_handle) as pdf:
             for ds1 in datasets_1:
@@ -1117,14 +1139,316 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                         or ds2 not in self.scalers[ds1]
                     ):
                         continue
-                    eval_chart(self, ds1, ds2, show=False)
-                    pdf.savefig()
-                    plt.close("all")
-                    if ds1 not in self.matches or ds2 not in self.matches[ds1]:
-                        continue
-                    eval_chart(self, ds1, ds2, show=False, results=True)
-                    pdf.savefig()
-                    plt.close("all")
+                    for results in [False, True]:
+                        if results and (
+                            ds1 not in self.matches or ds2 not in self.matches[ds1]
+                        ):
+                            continue
+                        plt.figure(figsize=(24, 14))
+                        eval_chart(self, ds1, ds2, show=False, results=results)
+                        for ax in plt.gcf().get_axes():
+                            ax.set_title(
+                                "\n".join(
+                                    textwrap.wrap(ax.get_title(), title_wrap_width)
+                                ),
+                                fontsize=10,
+                            )
+                            ax.set_xlabel(
+                                "\n".join(
+                                    textwrap.wrap(ax.get_xlabel(), x_label_wrap_width)
+                                ),
+                                fontsize=8,
+                                labelpad=5,
+                            )
+                            ax.set_ylabel(
+                                "\n".join(
+                                    textwrap.wrap(ax.get_ylabel(), y_label_wrap_width)
+                                ),
+                                fontsize=8,
+                                labelpad=5,
+                            )
+                        plt.tight_layout(pad=plot_padding)
+                        pdf.savefig()
+                        plt.close("all")
+        if to_bytes:
+            file_handle.seek(0)
+            return file_handle
+        return None
+
+    def explain(
+        self,
+        feature_tuples=None,
+        annotation_ids=None,
+        show_plot=True,
+        label_edges=False,
+        compress=True,
+    ):
+        """
+        Creates a directed subgraph of feature's weakly interconnected nodes
+
+        """
+        combined_subgraph = nx.DiGraph()
+        target_nodes = []
+        if feature_tuples:
+            if len(feature_tuples) == 2 and isinstance(feature_tuples[0], str):
+                feature_tuples = [feature_tuples]
+            for dataset, compound_id in feature_tuples:
+                df = self.datasets[dataset]
+                cmp_idx = df.loc[
+                    df[self.feature_name] == compound_id, self.feature_name
+                ].index[0]
+                node_name = f"{dataset}__{cmp_idx}"
+
+                # Find the target node
+                target_node = None
+                for node, data in self.graph.nodes(data=True):
+                    if node == node_name:
+                        target_node = node
+                        target_nodes.append(target_node)
+                        break
+                if target_node is None:
+                    continue
+
+                component_subgraph = self.get_component(self.graph, target_node)
+                if compress:
+                    component_subgraph = self.compress_graph(component_subgraph)
+                component_subgraph = component_subgraph.to_directed()
+                combined_subgraph = nx.compose(combined_subgraph, component_subgraph)
+
+        if annotation_ids:
+            if isinstance(annotation_ids, str):
+                annotation_ids = [annotation_ids]
+            for dataset_name, df in self.datasets.items():
+                matching_indices = df[
+                    df[self.annotation_col].isin(annotation_ids)
+                ].index
+                for idx in matching_indices:
+                    node_name = f"{dataset_name}__{idx}"
+                    if node_name in self.graph:
+                        target_nodes.append(node_name)
+                        component_subgraph = self.get_component(self.graph, node_name)
+                        if compress:
+                            component_subgraph = self.compress_graph(component_subgraph)
+
+                        # Convert to directed graph if not already
+                        component_subgraph = component_subgraph.to_directed()
+                        combined_subgraph = nx.compose(
+                            combined_subgraph, component_subgraph
+                        )
+        node_labels = {}
+        for node in combined_subgraph:
+            [n_dataset, n_idx] = node.split("__")
+            try:
+                n_annotation = self.datasets[n_dataset].loc[n_idx, self.annotation_col]
+            except:
+                n_annotation = ""
+
+            if pd.isnull(n_annotation):
+                n_annotation = ""
+            n_cmp_id = self.datasets[n_dataset].loc[n_idx, self.feature_name]
+
+            node_labels[node] = f"{n_dataset}-{n_cmp_id}\n{n_annotation}"
+
+        self.plot_subgraph(
+            combined_subgraph,
+            show_plot=show_plot,
+            label_edges=label_edges,
+            node_labels=node_labels,
+            selected_nodes=target_nodes,
+        )
+        return combined_subgraph
+
+    def get_component(self, graph, target_node):
+        """
+        Returns a subgraph of a target node's weakly interconnected nodes
+        """
+        visited_nodes = set()
+        # Traverse outgoing edges
+        for u, v in nx.bfs_edges(graph, source=target_node):
+            visited_nodes.add(u)
+            visited_nodes.add(v)
+        # Traverse incoming edges
+        for u, v in nx.bfs_edges(graph.reverse(), source=target_node):
+            visited_nodes.add(u)
+            visited_nodes.add(v)
+        component_subgraph = graph.subgraph(visited_nodes).copy()
+        return component_subgraph
+
+    def plot_subgraph(
+        self,
+        subgraph,
+        filepath="subgraph_plot.pdf",
+        to_bytes=False,
+        label_edges=True,
+        show_plot=True,
+        node_labels=None,
+        selected_nodes=None,
+    ):
+        """
+        Plots the subgraph.
+        """
+        if to_bytes:
+            file_handle = io.BytesIO()
+        else:
+            file_handle = filepath
+
+        plt.figure(figsize=(8, 6))
+        pos = nx.spring_layout(subgraph)
+
+        shape_cycle = [
+            "o",  # Circle
+            "^",  # Triangle
+            "s",  # Square
+            "p",  # Pentagon
+            "*",  # Star
+            "h",  # Hexagon
+            "D",  # Diamond
+            "d",  # Thin diamond
+            "P",  # Plus
+            "X",  # Cross
+            "8",  # Figure 8
+        ]
+        color_cycle = [
+            "red",
+            "green",
+            "blue",
+            "orange",
+            "purple",
+        ]
+        dataset_markers = {}
+
+        for node in subgraph.nodes():
+            dataset, _ = node.split("__")
+            if dataset not in dataset_markers:
+                dataset_markers[dataset] = [
+                    shape_cycle[len(dataset_markers) % len(shape_cycle)],
+                    color_cycle[len(dataset_markers) % len(color_cycle)],
+                ]
+
+        selected_node_list = []
+        non_selected_node_list = []
+        node_styles = {}
+
+        for node in subgraph.nodes():
+            dataset, _ = node.split("__")
+            shape, color = dataset_markers[dataset]
+            node_styles[node] = {"shape": shape, "color": color}
+
+            if selected_nodes and node in selected_nodes:
+                selected_node_list.append(node)
+            else:
+                non_selected_node_list.append(node)
+
+        # Draw non-selected nodes
+        for dataset, (shape, color) in dataset_markers.items():
+            nodes_with_style = [
+                node
+                for node in non_selected_node_list
+                if node.split("__")[0] == dataset
+            ]
+            if nodes_with_style:
+                nx.draw_networkx_nodes(
+                    subgraph,
+                    pos,
+                    nodelist=nodes_with_style,
+                    node_color="white",
+                    edgecolors=color,
+                    node_shape=shape,
+                    node_size=300,
+                    linewidths=1.5,
+                )
+
+        # Draw selected nodes
+        for dataset, (shape, color) in dataset_markers.items():
+            nodes_with_style = [
+                node for node in selected_node_list if node.split("__")[0] == dataset
+            ]
+            if nodes_with_style:
+                nx.draw_networkx_nodes(
+                    subgraph,
+                    pos,
+                    nodelist=nodes_with_style,
+                    node_color=color,
+                    edgecolors=color,
+                    node_shape=shape,
+                    node_size=300,
+                    linewidths=1.5,
+                )
+        # Draw edges
+        bidirectional_edges = []
+        monodirectional_edges = []
+
+        for u, v in subgraph.edges():
+            if subgraph.has_edge(v, u):
+                bidirectional_edges.append((u, v))
+            else:
+                monodirectional_edges.append((u, v))
+        nx.draw_networkx_edges(
+            subgraph,
+            pos,
+            edgelist=bidirectional_edges,
+            edge_color="black",
+            arrowstyle="->",
+        )
+        nx.draw_networkx_edges(
+            subgraph,
+            pos,
+            edgelist=monodirectional_edges,
+            edge_color="lightgray",
+            style="dashed",
+            arrowstyle="->",
+        )
+        # Draw labels
+        label_pos = {node: (x + 0.02, y + 0.02) for node, (x, y) in pos.items()}
+        nx.draw_networkx_labels(subgraph, label_pos, labels=node_labels, font_size=8)
+
+        # Draw edge labels
+        if label_edges:
+            edge_labels = nx.get_edge_attributes(subgraph, "score")
+            edge_labels = {w: f"{edge_labels[w]:.2f}" for w in edge_labels}
+            nx.draw_networkx_edge_labels(
+                subgraph, pos, edge_labels=edge_labels, font_size=6
+            )
+        # Create legend
+        legend_elements = [
+            plt.Line2D(
+                [0],
+                [0],
+                marker=style[0],
+                color=style[1],
+                label=dataset,
+                markerfacecolor="white",
+                markeredgecolor=style[1],
+                markeredgewidth=1.5,
+                markersize=8,
+            )
+            for dataset, style in dataset_markers.items()
+        ] + [
+            plt.Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="black",
+                label="Selected Nodes",
+                markerfacecolor="black",
+                markeredgewidth=1.5,
+                markersize=8,
+            )
+        ]
+        plt.legend(
+            handles=legend_elements,
+            title="Datasets",
+            loc="best",
+            bbox_to_anchor=(1.0, 0.5),
+            fontsize="small",
+            title_fontsize="small",
+        )
+        plt.title("Directed Subgraph")
+        plt.tight_layout()
+        plt.savefig(file_handle, format="pdf", bbox_inches="tight")
+        if show_plot:
+            plt.show()
+        plt.close()
         if to_bytes:
             file_handle.seek(0)
             return file_handle
@@ -1500,6 +1824,16 @@ def eval_chart(self, key1, key2, show=True, results=False):
             s_y_vals = np.log10(descr_2) - np.log10(s_descr_1)
             descr_1 = np.log10(descr_1)
 
+        max_length = 50
+        if len(key1) > max_length:
+            label1 = f"...{key1[-(max_length - 3):]}"
+        else:
+            label1 = key1
+        if len(key2) > max_length:
+            label2 = f"...{key2[-(max_length - 3):]}"
+        else:
+            label2 = key2
+
         # plot the deltas
         plt.subplot(len(self.descriptors), 3, 3 * i + 1)
         plt.scatter(
@@ -1509,9 +1843,9 @@ def eval_chart(self, key1, key2, show=True, results=False):
             s=3,
             rasterized=True,
         )
-        plt.title(f"{descr} {key1} vs {key2}")
-        plt.xlabel(f"{title} {descr} {key1}")
-        plt.ylabel(f"{title} {descr} ({key2} - {key1}) : {mode}")
+        plt.title(f"{descr} {label1} vs {label2}")
+        plt.xlabel(f"{title} {descr} {label1}")
+        plt.ylabel(f"{title} {descr} ({label2} - {label1}) : {mode}")
         plt.plot(scalers["x"], scalers["y"], color="red", rasterized=True)
 
         # plot the scaled
@@ -1523,9 +1857,9 @@ def eval_chart(self, key1, key2, show=True, results=False):
             s=3,
             rasterized=True,
         )
-        plt.title(f"{descr} {key1} vs {key2}")
-        plt.xlabel(f"{title} {descr} {key1}")
-        plt.ylabel(f"{title} {descr} ({key2} - {key1}) : {mode}")
+        plt.title(f"{descr} {label1} vs {label2}")
+        plt.xlabel(f"{title} {descr} {label1}")
+        plt.ylabel(f"{title} {descr} ({label2} - {label1}) : {mode}")
         plt.axhline(y=0, color="red", rasterized=True)
 
         # plot histogram
@@ -1537,7 +1871,7 @@ def eval_chart(self, key1, key2, show=True, results=False):
             rwidth=0.85,
         )
         plt.title(f"{descr} Histograms")
-        plt.xlabel(f"{title} {descr} ({key2} - {key1})")
+        plt.xlabel(f"{title} {descr} ({label2} - {label1})")
         plt.tight_layout()
 
     if show:
