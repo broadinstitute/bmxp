@@ -586,7 +586,7 @@ def test_integration(integration_data):
     )
     pickles[2].equals(results)
 
-    results = a.results(c_size_or_loss=3, g_size_or_loss=3, max_distance=2).loc[
+    results = a.results(c_size_or_loss=3, g_size_or_loss=3, diameter=2).loc[
         :, "DS1":"DS4"
     ]
     results = results.sort_values(by=["DS1", "DS2", "DS3", "DS4"]).reset_index(

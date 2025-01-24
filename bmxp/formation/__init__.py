@@ -4,6 +4,7 @@ import re
 import io
 import copy
 from scipy.stats import zscore
+import numpy as np
 from sklearn.decomposition import PCA
 import matplotlib
 from matplotlib.backends.backend_pdf import PdfPages
@@ -17,7 +18,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.3"
+__version__ = "0.2.5"
 
 
 def report(
@@ -706,24 +707,33 @@ def filter_samples_mask(data, smdata, formation_params):
     """
     Returns Boolean Mask of samples to keep
     the data columns must match the sample metadata index
+    handles the old way, with 'only_prefs_samples' and 'keep_not_used'
+    or the new way, with 'include_types'
     """
     warnings = []
-    to_keep = np.array([True] * len(smdata))
-    # check indices are identical
     if not smdata.index.equals(data.columns):
         raise IndexError("Your Sample Metadata does not match your data columns.")
 
-    # filter out anything not labeled a pref or sample
-    if formation_params["only_prefs_samples"]:
-        to_keep = (
-            smdata["injection_type"].str.startswith("pref").values
-            | smdata["injection_type"].str.startswith("sample").values
-        )
+    if "include_types" in formation_params:
+        if not formation_params["include_types"]:
+            return np.array([True] * len(smdata)), warnings
+        to_keep = np.array([False] * len(smdata))
+        # Update to_keep for matching injection types
+        for inj_type in formation_params["include_types"]:
+            to_keep |= smdata["injection_type"].str.startswith(inj_type).values
+    else:
+        to_keep = np.array([True] * len(smdata))
+        # filter out anything not labeled a pref or sample
+        if formation_params["only_prefs_samples"]:
+            to_keep = (
+                smdata["injection_type"].str.startswith("pref").values
+                | smdata["injection_type"].str.startswith("sample").values
+            )
 
-    # filter out not_used
-    if not formation_params["keep_not_used"]:
-        not_used = smdata["injection_type"].str.startswith("not_used").values
-        to_keep = to_keep & ~not_used
+        # filter out not_used
+        if not formation_params["keep_not_used"]:
+            not_used = smdata["injection_type"].str.startswith("not_used").values
+            to_keep = to_keep & ~not_used
     return to_keep, warnings
 
 
@@ -770,20 +780,33 @@ def filter_features_mask(data, smdata, fmdata, form_params):
     annotated = to_keep & pd.notnull(fmdata["Annotation_ID"])
     is_duplicated = fmdata.loc[annotated, "Annotation_ID"].duplicated(keep=False)
     duplicates = fmdata.loc[is_duplicated.index[is_duplicated]]
-    if "Adduct" in fmdata.columns:
-        for anno in set(duplicates["Annotation_ID"]):
-            group = duplicates.loc[duplicates["Annotation_ID"] == anno]
-            # pick highest priority adduct, if possible
-            priorities = group.loc[group.index[0], "Adduct_Priority"]
-            if not priorities:
-                continue
-            priorities = priorities.split(",")
-            for adduct in priorities:
-                if adduct in group["Adduct"].values:
-                    to_drop = group["Adduct"] != adduct
-                    to_drop_idx = to_drop.index[to_drop]
-                    to_keep[to_drop_idx] = False
-                    break
+    if "Adduct" in fmdata.columns and not form_params["keep_adducts"] == "all":
+        if form_params["keep_adducts"] == "top":
+            # only keep annotation if top priority adduct
+            fmdata_adduct_priority_null_vals = (
+                fmdata["Adduct_Priority"].fillna(False).astype(bool)
+            )
+            fmdata_adduct_priority_defined = fmdata[fmdata_adduct_priority_null_vals]
+            fmdata_top_adduct = fmdata_adduct_priority_defined["Adduct_Priority"].map(
+                lambda x: x.split(",")[0]
+            )
+            to_drop = fmdata_adduct_priority_defined["Adduct"] != fmdata_top_adduct
+            to_drop_idx = to_drop.index[to_drop]
+            to_keep[to_drop_idx] = False
+        else:
+            for anno in set(duplicates["Annotation_ID"]):
+                group = duplicates.loc[duplicates["Annotation_ID"] == anno]
+                # pick highest priority adduct, if possible
+                priorities = group.loc[group.index[0], "Adduct_Priority"]
+                if not priorities:
+                    continue
+                priorities = priorities.split(",")
+                for adduct in priorities:
+                    if adduct in group["Adduct"].values:
+                        to_drop = group["Adduct"] != adduct
+                        to_drop_idx = to_drop.index[to_drop]
+                        to_keep[to_drop_idx] = False
+                        break
 
     # find annotations that are still duplicated
     annotated = to_keep & pd.notnull(fmdata["Annotation_ID"])
@@ -800,7 +823,10 @@ def filter_features_mask(data, smdata, fmdata, form_params):
 
     # finally, if there are still duplicates, warn the user
     annotated = to_keep & pd.notnull(fmdata["Annotation_ID"])
-    is_duplicated = fmdata.loc[annotated, "Annotation_ID"].duplicated(keep=False)
+    cols_to_check = ["Annotation_ID"]
+    if "Adduct" in fmdata.columns and form_params["keep_adducts"] == "all":
+        cols_to_check.append("Adduct")
+    is_duplicated = fmdata.loc[annotated].duplicated(subset=cols_to_check, keep=False)
     if sum(is_duplicated) > 0:
         warnings.append(
             "There are duplicate annotations that could not be filtered by adduct "
