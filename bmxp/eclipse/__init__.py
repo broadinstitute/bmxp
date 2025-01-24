@@ -9,6 +9,7 @@ import copy
 import logging
 import collections
 import io
+from itertools import product
 import numpy as np
 import pandas as pd
 import networkx as nx
@@ -26,7 +27,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.2.2"
+__version__ = "0.2.4"
 
 
 def dataset_loops(attr=None):
@@ -621,7 +622,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         to_bytes=False,
         c_size_or_loss=0,
         g_size_or_loss=0,
-        max_distance=1,
+        diameter=1,
         remove_rerank=True,
     ):
         """
@@ -632,7 +633,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
             (positive, or #datasets - if 0 or negative)
         :param, c_size_or_loss, int, minimum size of clique
             (positive, or #datasets - if 0 or negative)
-        :param, max_distance, int, specifies maximum distance to be in a group
+        :param, diameter, int, specifies maximum distance to be in a group
         :param, rank_and_remove, bool, True - removes nodes after adding to a group,
             False - produces all combinations that aren't subsets of larger groups.
         """
@@ -645,7 +646,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
             *targ_datasets,
             c_size_or_loss=c_size_or_loss,
             g_size_or_loss=g_size_or_loss,
-            max_distance=max_distance,
+            diameter=diameter,
             remove_rerank=remove_rerank,
         )
         if to_bytes:
@@ -661,7 +662,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         *args,
         c_size_or_loss=0,
         g_size_or_loss=0,
-        max_distance=1,
+        diameter=1,
         remove_rerank=True,
     ):
         """
@@ -677,7 +678,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
             remove_rerank,
             c_size_or_loss,
             g_size_or_loss,
-            max_distance,
+            diameter,
         )
         for ds in df.columns:
             df = df.merge(
@@ -709,7 +710,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         return compressed
 
     @staticmethod
-    def get_rank_groups(graph, max_size, c_size=None, g_size=None, max_distance=1):
+    def get_rank_groups(graph, max_size, c_size=None, g_size=None, diameter=1):
         """
         Given a subgraph, ranks all possible groups based on provided info.
         Returns a list of ({group members}, clique_size, group_size,
@@ -724,6 +725,21 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         if g_size is None:
             g_size = max_size
 
+        # some sanity checks
+        if c_size > g_size:
+            raise UserWarning(
+                "You have indicated a clique size minimum greater than the group size m"
+                "inimum. This is likely unintentional."
+            )
+
+        if max_size + 1 < c_size + diameter:
+            raise UserWarning(
+                "Your diameter and clique size setting is likely a mistake. If you use "
+                "a diameter of 2, set 'c_size_or_loss' to -1, or any number less than t"
+                "he number of datasets. For a diameter of 3, set 'c_size_or_loss' to -2"
+                " or any number that is 2 below the number of datasets."
+            )
+
         # use cliques as seeds
         cliques = set(
             frozenset(clique)
@@ -733,11 +749,11 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
 
         potential_groups = set()
 
-        if max_distance == 1:
+        if diameter == 1:
             potential_groups = cliques
         else:
             for clique in cliques:
-                if max_distance == 2:
+                if diameter == 2:
                     # Try adding each nodes neighbors
                     neighbors = {
                         node: set(graph.neighbors(node)) - clique for node in clique
@@ -749,13 +765,28 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                             if len(clique.union(neighbors[node])) >= g_size
                         )
                     )
-                if max_distance == 3:
-                    # add all of the node's neighbors
-                    neighbors = set(clique)
-                    for node in clique:
-                        neighbors.update(set(graph.neighbors(node)))
-                    if len(neighbors) >= g_size:
-                        potential_groups.add(frozenset(neighbors))
+                if diameter == 3:
+                    # Initialize valid_nodes as a defaultdict of sets
+                    valid_nodes = collections.defaultdict(set)
+
+                    # Populate valid_nodes with neighbors grouped by partite
+                    for clique_node in clique:
+                        for neighbor_node in set(graph.neighbors(clique_node)) - clique:
+                            partite = neighbor_node.split("__")[0]
+                            valid_nodes[partite].add(neighbor_node)
+                    target_g_size = sum(
+                        1 for partite in valid_nodes.values() if partite
+                    ) + len(clique)
+                    if target_g_size < g_size:
+                        continue
+                    # add all frozensets to potential groups
+                    non_empty = [nodes for nodes in valid_nodes.values() if nodes]
+                    potential_groups.update(
+                        set(
+                            frozenset(combination).union(frozenset(clique))
+                            for combination in product(*non_empty)
+                        )
+                    )
 
         # remove subsets
         filtered_groups = []
@@ -796,7 +827,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         remove_rerank=True,
         c_size_or_loss=0,
         g_size_or_loss=0,
-        max_distance=1,
+        diameter=1,
     ):
         """
         Makes a dataframe where each row is a feature, and each column is a dataset
@@ -825,7 +856,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                             len(self.datasets),
                             c_size_or_loss,
                             g_size_or_loss,
-                            max_distance,
+                            diameter,
                         )
                         if len(new) == 0:
                             break
@@ -837,7 +868,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                         len(self.datasets),
                         c_size_or_loss,
                         g_size_or_loss,
-                        max_distance,
+                        diameter,
                     )
 
                 # remove those which don't have a dataset we're interested in
@@ -1597,9 +1628,11 @@ def anchors(ds, match_params, remove_all=True, priority="Intensity"):
         i.e. higher intensity is a strong feature
     :return: list, the index names of the anchors
     """
-    ds = ds[[*match_params.keys()]]
     if not remove_all:
+        ds = ds[[*match_params.keys()] + [priority]]
         ds.sort_values(priority, ascending=False)
+    else:
+        ds = ds[[*match_params.keys()]]
 
     # convert to numpy for performance
     index = ds.index

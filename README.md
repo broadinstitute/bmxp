@@ -10,9 +10,7 @@ This is a collection of tools for processing our data, which powers our cloud pr
 * [Gravity](https://github.com/broadinstitute/bmxp/blob/main/bmxp/gravity/readme.md) - Cluster redundant LCMS features based on RT and Correlation (And someday, XIC shape)
 * [Blueshift](https://github.com/broadinstitute/bmxp/blob/main/bmxp/blueshift/readme.md) - Drift Correction via pooled technical replicates and internal standards
 * [Formation](https://github.com/broadinstitute/bmxp/blob/main/bmxp/formation/readme.md) - Formatting and Final QC
-
-In the future we will add:
-* Rawfilereader - Performant LCMS raw file reader (.mzml, .raw)
+* [RawFileReader](https://github.com/broadinstitute/bmxp/blob/main/bmxp/rawfilereader/readme.md) - Read .raw and .mzml files
 
 We expect users to be familiar with Python and already have an understanding of LCMS Metabolomics data processing and the specific steps they wish to accomplish.
 
