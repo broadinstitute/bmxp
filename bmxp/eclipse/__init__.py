@@ -27,7 +27,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 
 def dataset_loops(attr=None):
@@ -1629,7 +1629,8 @@ def anchors(ds, match_params, remove_all=True, priority="Intensity"):
     :return: list, the index names of the anchors
     """
     if not remove_all:
-        ds = ds[[*match_params.keys()] + [priority]]
+        columns = list(set(match_params.keys()) | {priority})
+        ds = ds[columns]
         ds.sort_values(priority, ascending=False)
     else:
         ds = ds[[*match_params.keys()]]

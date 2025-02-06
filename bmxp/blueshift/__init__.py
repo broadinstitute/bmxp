@@ -12,7 +12,7 @@ from tqdm import tqdm
 from scipy import interpolate
 from bmxp import FMDATA, IMDATA, POOL_INJ_TYPES
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 class DriftCorrection:  # pylint: disable=too-many-instance-attributes
@@ -148,7 +148,7 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
 
         # check that batch ends aren't on dropped samples
         non_dc = sample_information[self.injection_type].str.startswith(
-            tuple(["not_used", "brpp", "mm", "blank", "other"])
+            tuple(["not_used", "brpp", "mm", "blank", "other", "tube_blank", "ms2"])
         )
         will_drop = ~in_data & non_dc
         end_drops = sample_information.loc[will_drop, self.batches_label] == "batch end"
