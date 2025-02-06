@@ -11,6 +11,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.dates as mdates
 import xlsxwriter
 from bmxp.gravity import spearman, pearson
+from bmxp import IMDATA
 
 matplotlib.use("agg")
 
@@ -18,7 +19,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 
 def report(
@@ -554,12 +555,10 @@ def harmonize_metadata(data, injectionset, sampleset):
             "before sharing results."
         )
     combined[additional_meta] = combined[additional_meta].astype(object).fillna("NA")
-    # until filtering can check or create QCRole column
-    if "QCRole" in combined.columns:
-        combined.rename(columns={"QCRole": "qcrole"}, inplace=True)
 
-    if "qcrole" not in combined.columns:
-        combined["qcrole"] = combined["injection_type"]
+    qcrole = IMDATA["QCRole"]
+    if qcrole not in combined.columns:
+        combined[qcrole] = combined["injection_type"]
 
     # re-order
     injection_meta = combined.reindex(
@@ -569,7 +568,7 @@ def harmonize_metadata(data, injectionset, sampleset):
             "column_number",
             "injection_order",
             "injection_type",
-            "qcrole",
+            qcrole,
         ]
         + additional_meta
         + [
@@ -580,7 +579,7 @@ def harmonize_metadata(data, injectionset, sampleset):
     injection_meta["raw_file_name"] = injection_meta.index
     # rename sample metadata and QCRole columns
     names = {col: col.lower().replace(" ", "_") for col in additional_meta}
-    names["qcrole"] = "sample_type"
+    names[qcrole] = "sample_type"
     injection_meta = injection_meta.rename(columns=names)
 
     injection_meta.loc[:, "date_extracted"] = pd.to_datetime(
