@@ -86,6 +86,7 @@ int16_t fillScanEvents(RawFile* rawFile, FinniganInfo finniganInfo, FinniganScan
     memcpy(&filters[k].msLevel, &data[pos + 6], 1);
     // printf("msLevel: %d ", filters[k].msLevel);
     memcpy(&filters[k].scanType, &data[pos + 7], 1);
+    uint8_t inSource = data[pos + 8];
     // printf("scanType: %d ", filters[k].scanType);
     // memcpy(&filters[k].dependentScans, &data[pos + 10], 1);
     memcpy(&filters[k].analyzer, &data[pos + 40], 1);
@@ -135,7 +136,7 @@ int16_t fillScanEvents(RawFile* rawFile, FinniganInfo finniganInfo, FinniganScan
     // printf("Nparam: %s ", rawFile->instrumentModel);
     // imaging files fail here. They need 52 bytes for some reason
     // pos += 52;
-    if (strcmp(rawFile->instrumentModel, "Orbitrap Exploris 240") == 0) {
+    if (strcmp(rawFile->instrumentModel, "Orbitrap Exploris 240") == 0 && inSource == 1) {
       pos += 48;
       pos = movePascal(rawFile->data, pos, 1);
     } else if (strcmp(rawFile->instrumentModel, "") == 0) {
