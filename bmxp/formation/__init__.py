@@ -19,7 +19,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 
 
 def report(
@@ -527,6 +527,12 @@ def harmonize_metadata(data, injectionset, sampleset):
         injectionset = injectionset.rename(columns={"program_id": "reporting_name"})
     combined = injectionset.loc[data.columns].copy()
     combined["broad_id"] = combined["broad_id"].fillna("")
+
+    s_broad_ids = combined.loc[combined["injection_type"] == "sample", "broad_id"]
+    duplicates = set(s_broad_ids.loc[s_broad_ids.duplicated()]) - set([""])
+    if len(duplicates) > 0:
+        warnings.append(f"There are duplicate Broad_IDs: {', '.join(duplicates)}")
+
     sampleset_copy = sampleset.copy()
     sampleset_copy.loc["", :] = np.nan  # blank broad_id means no metadata
     combined = combined.join(sampleset_copy, on="broad_id", lsuffix="_inj")
