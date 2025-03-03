@@ -5,4 +5,5 @@ statsmodels
 matplotlib
 scikit-learn>=1
 xlsxwriter
+openpyxl
 tqdm

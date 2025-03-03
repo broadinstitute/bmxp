@@ -19,7 +19,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.7"
+__version__ = "0.2.8"
 
 
 def report(
@@ -92,17 +92,6 @@ def report(
             smdata[date_type] = pd.to_datetime(smdata[date_type])
         except Exception as e:  # pylint: disable=broad-except
             raise ValueError(f"{date_type} contains one or more invalid dates.") from e
-
-    try:
-        smdata["column_number"] = pd.to_numeric(smdata["column_number"])
-    except ValueError as e:
-        character = re.search('".+"', str(e))
-        if character:
-            raise ValueError(
-                f"Column_number contains a non-numeric character: "
-                f"{character.group()}."
-            ) from e
-        raise ValueError("Column_number contains a non-numeric character.") from e
 
     try:
         smdata["injection_order"] = pd.to_numeric(smdata["injection_order"])
