@@ -9,6 +9,7 @@ import copy
 import logging
 import collections
 import io
+from typing import Optional, List, Union
 from itertools import product
 import numpy as np
 import pandas as pd
@@ -27,7 +28,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 
 
 def dataset_loops(attr=None):
@@ -107,6 +108,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
     # references FMDATA keys, not schema values
     # values are evaluated in __init__
     descriptors = {"RT": "linear", "MZ": "ppm", "Intensity": "log10"}
+    mz_col = "MZ"
     default_cutoff = 6
     default_weight = 1
     default_cutoffs = {}
@@ -124,16 +126,19 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
     intensity_col = "Intensity"
     annotation_col = "Annotation_ID"
 
-    def __init__(self, *args, names=None, schema_labels=None):
-        """
-        Initializes the MSAligner object with a collection of datasets and their names.
-
-        :param args: tuple[str], filepaths of .csv datasets
-        :param names: list[str], names of datasets
-        """
-
+    def __init__(
+        self,
+        *args: Union[str, pd.DataFrame],
+        names: Optional[List[str]] = None,
+        schema_labels: Optional[dict[str, str]] = None,
+    ):
         fmdata = FMDATA.copy()
-        if schema_labels is not None:
+
+        self.mz_col = (schema_labels or {}).get(
+            MSAligner.mz_col, FMDATA[MSAligner.mz_col]
+        )
+
+        if schema_labels:
             fmdata.update(schema_labels)
 
         self.descriptors = {fmdata[k]: v for k, v in MSAligner.descriptors.items()}
@@ -971,10 +976,17 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
             coarse_params[descr_param].update({"mode": self.descriptors[descr_param]})
 
         for ds in datasets:
-
-            self.anchors[ds] = anchors(
-                self.datasets[ds], coarse_params, self.remove_all
-            )
+            if self.mz_col in set(self.descriptors.keys()):
+                self.anchors[ds] = anchors_mz(
+                    self.datasets[ds],
+                    coarse_params,
+                    self.mz_col,
+                    self.remove_all,
+                )
+            else:
+                self.anchors[ds] = anchors(
+                    self.datasets[ds], coarse_params, self.remove_all
+                )
 
     @dataset_loops("coarse_matches")
     def gen_coarse(self, ds1, ds2):
@@ -992,11 +1004,19 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         for descr_param in coarse_params:
             coarse_params[descr_param].update({"mode": self.descriptors[descr_param]})
         # extract anchors, match, and convert results to a dataframe
-        res = simple_match(
-            self.datasets[ds1].loc[self.anchors[ds1], :],
-            self.datasets[ds2].loc[self.anchors[ds2], :],
-            coarse_params,
-        )
+        if self.mz_col in self.descriptors.keys():
+            res = simple_match_mz(
+                self.datasets[ds1].loc[self.anchors[ds1], :],
+                self.datasets[ds2].loc[self.anchors[ds2], :],
+                coarse_params,
+                self.mz_col,
+            )
+        else:
+            res = simple_match(
+                self.datasets[ds1].loc[self.anchors[ds1], :],
+                self.datasets[ds2].loc[self.anchors[ds2], :],
+                coarse_params,
+            )
         self.coarse_matches[ds1][ds2] = pd.DataFrame(res)
         self.coarse_matches[ds1][ds2].columns = [ds1, ds2]
 
@@ -1098,14 +1118,25 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         if ds1 not in self.scores:
             self.scores[ds1] = {}
 
-        self.matches[ds1][ds2], self.scores[ds1][ds2] = score_match(
-            self.scaled_values[ds1][ds2],
-            self.datasets[ds2],
-            self.stds[ds1][ds2],
-            self.descriptors,
-            cutoffs,
-            weights,
-        )
+        if self.mz_col in self.descriptors.keys():
+            self.matches[ds1][ds2], self.scores[ds1][ds2] = score_match_mz(
+                self.scaled_values[ds1][ds2],
+                self.datasets[ds2],
+                self.stds[ds1][ds2],
+                self.descriptors,
+                cutoffs,
+                weights,
+                self.mz_col,
+            )
+        else:
+            self.matches[ds1][ds2], self.scores[ds1][ds2] = score_match(
+                self.scaled_values[ds1][ds2],
+                self.datasets[ds2],
+                self.stds[ds1][ds2],
+                self.descriptors,
+                cutoffs,
+                weights,
+            )
 
     @dataset_loops()
     def gen_graph(self, ds1, ds2):
@@ -1627,6 +1658,253 @@ def score_match(df1, df2, stds, descriptors, cutoffs, weights, top_n=1):
     )
 
 
+def anchors_mz(ds, match_params, mz_key, remove_all=True, priority="Intensity"):
+    """
+    Shortcut for anchors when a descriminating column like MZ is present.
+    Allows for binary search
+    :param ds: DataFrame
+    :param match_params: dict, parameters for matching
+    :param mz_key: str, descriptor for binary search
+    :param remove_all: bool, flag to indicate removing all confusable feature
+    :param priority: str, the column indicating the which features are highest quality
+        i.e. higher intensity is a strong feature
+    :return: list, the index names of the anchors
+    """
+    thresholds = {k: {} for k in match_params if k != mz_key}
+    if not remove_all:
+        columns = list(set(match_params.keys()) | {priority})
+        ds = ds[columns].copy()
+    else:
+        ds = ds[[*match_params.keys()]].copy()
+    ds["index"] = ds.index
+    ds = ds.sort_values(by=mz_key).reset_index(drop=True)
+
+    for descriptor in thresholds:
+        thresholds[descriptor]["values"] = ds[descriptor].to_numpy()
+        tol = (
+            abs(match_params[descriptor]["upper"] - match_params[descriptor]["lower"])
+            / 2
+        )
+
+        if match_params[descriptor]["mode"] == "log10":
+            thresholds[descriptor]["lower"] = thresholds[descriptor]["values"] / 10**tol
+            thresholds[descriptor]["upper"] = thresholds[descriptor]["values"] * 10**tol
+        if match_params[descriptor]["mode"] == "linear":
+            thresholds[descriptor]["lower"] = thresholds[descriptor]["values"] - tol
+            thresholds[descriptor]["upper"] = thresholds[descriptor]["values"] + tol
+        if match_params[descriptor]["mode"] == "ppm":
+            thresholds[descriptor]["lower"] = thresholds[descriptor]["values"] - (
+                thresholds[descriptor]["values"] / 1e6 * tol
+            )
+            thresholds[descriptor]["upper"] = thresholds[descriptor]["values"] + (
+                thresholds[descriptor]["values"] / 1e6 * tol
+            )
+
+    mz_array = ds[mz_key].to_numpy()
+    orig_index = ds["index"].to_numpy()
+    ppm_tol = abs(match_params[mz_key]["upper"] - match_params[mz_key]["lower"]) / 2
+    mz_upper = mz_array + mz_array * ppm_tol / 1e6
+    mz_lower = mz_array - mz_array * ppm_tol / 1e6
+    graph = nx.Graph()
+    graph.add_nodes_from(orig_index)
+
+    for i in range(len(mz_array)):
+        j_start = np.searchsorted(mz_array, mz_lower[i], side="left")
+        j_end = np.searchsorted(mz_array, mz_upper[i], side="right")
+        if j_start >= j_end:
+            continue
+        hits = np.array([True] * (j_end - j_start))
+        for descriptor in thresholds:
+            candidates = thresholds[descriptor]["values"][j_start:j_end]
+            hits = (
+                hits
+                & (candidates > thresholds[descriptor]["lower"][i])
+                & (candidates < thresholds[descriptor]["upper"][i])
+            )
+        for j in np.flatnonzero(hits) + j_start:
+            if j == i:
+                continue
+            graph.add_edge(orig_index[i], orig_index[j])
+    to_keep = []
+    for component in nx.connected_components(graph):
+        if len(component) == 1:
+            to_keep.append(next(iter(component)))
+        elif not remove_all:
+            component_list = list(component)
+            max_idx = ds.loc[component_list, "Intensity"].idxmax()
+            to_keep.append(max_idx)
+    to_keep.sort()
+    return to_keep
+
+
+def score_match_mz(df1, df2, stds, descriptors, cutoffs, weights, mz_key, top_n=1):
+    """
+    Shortcut for score_match when a discriminating column, like "MZ" is present.
+    Allows for a fast binary search
+    Returns scored best matches for a dataframe to another
+    :param df1: DataFrame, first dataset
+    :param df2: DataFrame, second dataset
+    :param stds: Dict, standard deviations for "RT", "MT", and "Intensity"
+    :param cutoffs: Dict, Multipliers for finding cutoffs
+    :param weights: Dict, Multipliers for weights
+    :param mz_key: Str, descriptor label for binary search
+    :param top_n: Int, number of potential matches to record
+    :return: Dataframe, df1 index as index, and matching df2 index in top_n columns
+    """
+    results_indices = []
+    results_scores = []
+
+    other_keys = [k for k in descriptors if k != mz_key]
+    df1 = df1[[mz_key] + other_keys].copy()
+    df2 = df2[[mz_key] + other_keys].copy()
+    df2 = df2.sort_values(by=mz_key)
+
+    mz1 = df1[mz_key].to_numpy()
+    mz2 = df2[mz_key].to_numpy()
+    index2 = df2.index.to_numpy()
+
+    mz_tol = cutoffs[mz_key] * stds[mz_key]
+    mz_lower = mz1 - mz1 * mz_tol / 1e6
+    mz_upper = mz1 + mz1 * mz_tol / 1e6
+
+    # Prepare descriptor values and bounds
+    vals1 = {}
+    vals2 = {}
+    for k in other_keys:
+        v1 = df1[k].to_numpy()
+        v2 = df2[k].to_numpy()
+        tol = cutoffs[k] * stds[k]
+        mode = descriptors[k]
+        if mode == "log10":
+            lower = v1 / 10**tol
+            upper = v1 * 10**tol
+        elif mode == "linear":
+            lower = v1 - tol
+            upper = v1 + tol
+        elif mode == "ppm":
+            lower = v1 - (v1 * tol / 1e6)
+            upper = v1 + (v1 * tol / 1e6)
+        else:
+            raise ValueError(f"Unknown mode for {k}")
+        vals1[k] = {"v": v1, "lo": lower, "hi": upper}
+        vals2[k] = v2
+
+    for i in range(len(mz1)):
+        mz_i = mz1[i]
+        j_start = np.searchsorted(mz2, mz_lower[i], side="left")
+        j_end = np.searchsorted(mz2, mz_upper[i], side="right")
+
+        if j_start >= j_end:
+            results_indices.append([None] * top_n)
+            results_scores.append([None] * top_n)
+            continue
+
+        # Apply descriptor filters
+        hits = np.ones(j_end - j_start, dtype=bool)
+        for k in other_keys:
+            candidates = vals2[k][j_start:j_end]
+            hits &= (candidates >= vals1[k]["lo"][i]) & (
+                candidates <= vals1[k]["hi"][i]
+            )
+
+        if not np.any(hits):
+            results_indices.append([None] * top_n)
+            results_scores.append([None] * top_n)
+            continue
+
+        candidates_mz = mz2[j_start:j_end][hits]
+        idx = index2[j_start:j_end][hits]
+        score = ((((mz_i - candidates_mz) / mz_i) * 1e6) / stds[mz_key]) ** 2 * weights[
+            mz_key
+        ]
+        for k in other_keys:
+            v1 = vals1[k]["v"][i]
+            v2 = vals2[k][j_start:j_end][hits]
+            if descriptors[k] == "linear":
+                score += ((v1 - v2) / stds[k]) ** 2 * weights[k]
+            elif descriptors[k] == "log10":
+                score += (np.log10(v1 / v2) / stds[k]) ** 2 * weights[k]
+            elif descriptors[k] == "ppm":
+                score += ((v1 - v2) / v1 * 1e6 / stds[k]) ** 2 * weights[k]
+
+        top_idx = np.argsort(score)[:top_n]
+        score_top = score[top_idx]
+        index_top = idx[top_idx]
+
+        pad_len = top_n - len(score_top)
+        results_indices.append(index_top.tolist() + [None] * pad_len)
+        results_scores.append(score_top.tolist() + [None] * pad_len)
+
+    return (
+        pd.DataFrame(results_indices, index=df1.index),
+        pd.DataFrame(results_scores, index=df1.index),
+    )
+
+
+def simple_match_mz(df1, df2, match_params, mz_key):
+    """
+    Binary search match based on a discriminating mz_key with
+    additional descriptor filtering.
+
+    :param df1: DataFrame, source
+    :param df2: DataFrame, target
+    :param match_params: dict, format:
+        {
+            "MZ": {"lower": -5, "upper": 5, "mode": "ppm"},
+            "RT": {"lower": -0.2, "upper": 0.2, "mode": "linear"},
+            ...
+        }
+    :param mz_key: str, primary key used for binary search
+    :return: list of [df1_index, ds2_index]
+    """
+    other_keys = [k for k in match_params if k != mz_key]
+    df1 = df1[[mz_key] + other_keys].copy()
+    df2 = df2[[mz_key] + other_keys].copy()
+    df2 = df2.sort_values(by=mz_key)
+
+    mz1 = df1[mz_key].to_numpy()
+    mz2 = df2[mz_key].to_numpy()
+
+    mz_lower = mz1 + mz1 * match_params[mz_key]["lower"] / 1e6
+    mz_upper = mz1 + mz1 * match_params[mz_key]["upper"] / 1e6
+
+    vals1 = {}
+    vals2 = {}
+    for k in other_keys:
+        v1 = df1[k].to_numpy()
+        v2 = df2[k].to_numpy()
+        mode = match_params[k]["mode"]
+        if mode == "log10":
+            lower = v1 * 10 ** match_params[k]["lower"]
+            upper = v1 * 10 ** match_params[k]["upper"]
+        elif mode == "linear":
+            lower = v1 + match_params[k]["lower"]
+            upper = v1 + match_params[k]["upper"]
+        elif mode == "ppm":
+            lower = v1 + (v1 * match_params[k]["lower"] / 1e6)
+            upper = v1 + (v1 * match_params[k]["upper"] / 1e6)
+        else:
+            raise ValueError(f"Unknown mode for {k}")
+        vals1[k] = {"v": v1, "lo": lower, "hi": upper}
+        vals2[k] = v2
+
+    results = []
+    for i in range(len(mz1)):
+        j_start = np.searchsorted(mz2, mz_lower[i], side="left")
+        j_end = np.searchsorted(mz2, mz_upper[i], side="right")
+        if j_start >= j_end:
+            continue
+
+        hits = np.ones(j_end - j_start, dtype=bool)
+        for k in other_keys:
+            candidates = vals2[k][j_start:j_end]
+            hits &= (candidates > vals1[k]["lo"][i]) & (candidates < vals1[k]["hi"][i])
+
+        for m in df2.index[j_start:j_end][hits]:
+            results.append([df1.index[i], m])
+    return results
+
+
 def anchors(ds, match_params, remove_all=True, priority="Intensity"):
     """
     Creates a list of anchors for a given dataset.
@@ -1640,7 +1918,7 @@ def anchors(ds, match_params, remove_all=True, priority="Intensity"):
     if not remove_all:
         columns = list(set(match_params.keys()) | {priority})
         ds = ds[columns]
-        ds.sort_values(priority, ascending=False)
+        ds = ds.sort_values(priority, ascending=False)
     else:
         ds = ds[[*match_params.keys()]]
 
@@ -1658,16 +1936,17 @@ def anchors(ds, match_params, remove_all=True, priority="Intensity"):
         bool_array = np.full(len(index), True, dtype=bool)
         for j, param in enumerate(match_params.values()):
             descr_val = row[j]
+            tol = abs(param["upper"] - param["lower"]) / 2
             if param["mode"] == "linear":
-                lower = descr_val + param["lower"]
-                upper = descr_val + param["upper"]
+                lower = descr_val - tol
+                upper = descr_val + tol
             elif param["mode"] == "ppm":
-                lower = descr_val + (descr_val / 1_000_000 * param["lower"])
-                upper = descr_val + (descr_val / 1_000_000 * param["upper"])
+                lower = descr_val - (descr_val / 1_000_000 * tol)
+                upper = descr_val + (descr_val / 1_000_000 * tol)
             elif param["mode"] == "log10":
                 descr_val = float(descr_val)
-                lower = descr_val * 10 ** param["lower"]
-                upper = descr_val * 10 ** param["upper"]
+                lower = descr_val / 10**tol
+                upper = descr_val * 10**tol
             bool_array = bool_array & (ds[:, j] > lower) & (ds[:, j] < upper)
 
         results = ds[bool_array]

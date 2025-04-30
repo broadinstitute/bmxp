@@ -518,7 +518,7 @@ def harmonize_metadata(data, injectionset, sampleset):
     if "reporting_name" not in injectionset.columns:
         injectionset = injectionset.rename(columns={"program_id": "reporting_name"})
     combined = injectionset.loc[data.columns].copy()
-    combined["broad_id"] = combined["broad_id"].fillna("")
+    combined["broad_id"] = combined["broad_id"].fillna("NA")
 
     s_broad_ids = combined.loc[combined["injection_type"] == "sample", "broad_id"]
     duplicates = set(s_broad_ids.loc[s_broad_ids.duplicated()]) - set([""])
@@ -580,6 +580,7 @@ def harmonize_metadata(data, injectionset, sampleset):
             "injection_order",
             "injection_type",
             qcrole,
+            "broad_id",
         ]
         + additional_meta
         + [
