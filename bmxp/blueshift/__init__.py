@@ -12,7 +12,7 @@ from tqdm import tqdm
 from scipy import interpolate
 from bmxp import FMDATA, IMDATA, POOL_INJ_TYPES
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 
 class DriftCorrection:  # pylint: disable=too-many-instance-attributes
@@ -506,12 +506,12 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         :return: list of bools, skip or don't skip for each row of data
         """
         pools = np.isin(self.data.columns, self.pools[pool])
-        max_missing = (1 - max_missing_percent / 100) * len(self.pools[pool])
+        min_present = (1 - max_missing_percent / 100) * len(self.pools[pool])
         pool_data = self.data.loc[:, pools].values
         pool_counts = np.sum(pool_data > 0, axis=1)
-        to_skip = (pool_counts == 0) | (pool_counts < max_missing)
+        to_skip = (pool_counts == 0) | (pool_counts < min_present)
         if batch_count == 1:
-            to_skip = to_skip & (pool_counts == 1)
+            to_skip = to_skip | (pool_counts == 1)
         return to_skip
 
     @staticmethod
