@@ -11,6 +11,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.dates as mdates
 import xlsxwriter
 from bmxp.gravity import spearman, pearson
+from bmxp import IMDATA
 
 matplotlib.use("agg")
 
@@ -18,7 +19,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.5"
+__version__ = "0.2.10"
 
 
 def report(
@@ -93,17 +94,6 @@ def report(
             raise ValueError(f"{date_type} contains one or more invalid dates.") from e
 
     try:
-        smdata["column_number"] = pd.to_numeric(smdata["column_number"])
-    except ValueError as e:
-        character = re.search('".+"', str(e))
-        if character:
-            raise ValueError(
-                f"Column_number contains a non-numeric character: "
-                f"{character.group()}."
-            ) from e
-        raise ValueError("Column_number contains a non-numeric character.") from e
-
-    try:
         smdata["injection_order"] = pd.to_numeric(smdata["injection_order"])
     except ValueError as e:
         character = re.search('".+"', str(e))
@@ -119,10 +109,10 @@ def report(
     transposed_s_data = transposed_s_data.apply(lambda x: x.fillna(x.min() / 2))
     # drop empty columns
     transposed_s_data = transposed_s_data.dropna(how="all", axis=1)
-    transposed_s_data = zscore(transposed_s_data)
-    transposed_s_data = transposed_s_data.fillna(0)  # zscore is NaN if stdev is 0
+    s_data_zscores = zscore(transposed_s_data.to_numpy())
+    s_data_zscores = np.nan_to_num(s_data_zscores)  # zscore is NaN if stdev is 0
     sample_pca = PCA(n_components=2)
-    sample_pca_data = sample_pca.fit_transform(transposed_s_data)
+    sample_pca_data = sample_pca.fit_transform(s_data_zscores)
 
     pca_df = pd.DataFrame(data=sample_pca_data, columns=["pc1", "pc2"])
 
@@ -491,21 +481,24 @@ def _sort_dataset(final_dataset):
     final_dataset = final_dataset.sort_values(by=["Metabolite"])
 
     annotated = ~pd.isnull(final_dataset["Metabolite"])
-    # sort annotated
-    final_dataset.loc[annotated, :] = (
-        final_dataset.loc[annotated, :]
-        .sort_values(
-            by=[
-                "orderNum",
-                "superClass",
-                "mainClass",
-                "subClass",
-                "MZ_Calculated",
-                "RT",
-            ]
+    # sort annotated if present
+    try:
+        final_dataset.loc[annotated, :] = (
+            final_dataset.loc[annotated, :]
+            .sort_values(
+                by=[
+                    "orderNum",
+                    "superClass",
+                    "mainClass",
+                    "subClass",
+                    "MZ_Calculated",
+                    "RT",
+                ]
+            )
+            .values
         )
-        .values
-    )
+    except KeyError:
+        pass
 
     # sort nontargeted separately
     final_dataset.loc[~annotated, :] = (
@@ -525,7 +518,13 @@ def harmonize_metadata(data, injectionset, sampleset):
     if "reporting_name" not in injectionset.columns:
         injectionset = injectionset.rename(columns={"program_id": "reporting_name"})
     combined = injectionset.loc[data.columns].copy()
-    combined["broad_id"] = combined["broad_id"].fillna("")
+    combined["broad_id"] = combined["broad_id"].fillna("NA")
+
+    s_broad_ids = combined.loc[combined["injection_type"] == "sample", "broad_id"]
+    duplicates = set(s_broad_ids.loc[s_broad_ids.duplicated()]) - set([""])
+    if len(duplicates) > 0:
+        warnings.append(f"There are duplicate Broad_IDs: {', '.join(duplicates)}")
+
     sampleset_copy = sampleset.copy()
     sampleset_copy.loc["", :] = np.nan  # blank broad_id means no metadata
     combined = combined.join(sampleset_copy, on="broad_id", lsuffix="_inj")
@@ -554,12 +553,23 @@ def harmonize_metadata(data, injectionset, sampleset):
             "before sharing results."
         )
     combined[additional_meta] = combined[additional_meta].astype(object).fillna("NA")
-    # until filtering can check or create QCRole column
-    if "QCRole" in combined.columns:
-        combined.rename(columns={"QCRole": "qcrole"}, inplace=True)
 
-    if "qcrole" not in combined.columns:
-        combined["qcrole"] = combined["injection_type"]
+    qcrole = IMDATA["QCRole"]
+    qcrole_map = {
+        "tube_blank": "Tube_Blank",
+        "blank": "Blank",
+        "not_used": "Not_Used",
+        "mm": "Master_Mix",
+        "ms2": "MS2",
+        "brpp": "BRPP",
+    }
+
+    if qcrole in combined.columns:
+        for prefix, replacement in qcrole_map.items():
+            mask = combined["injection_type"].str.startswith(prefix, na=False)
+            combined.loc[mask, qcrole] = replacement
+    else:
+        combined[qcrole] = combined["injection_type"]
 
     # re-order
     injection_meta = combined.reindex(
@@ -569,7 +579,8 @@ def harmonize_metadata(data, injectionset, sampleset):
             "column_number",
             "injection_order",
             "injection_type",
-            "qcrole",
+            qcrole,
+            "broad_id",
         ]
         + additional_meta
         + [
@@ -580,7 +591,7 @@ def harmonize_metadata(data, injectionset, sampleset):
     injection_meta["raw_file_name"] = injection_meta.index
     # rename sample metadata and QCRole columns
     names = {col: col.lower().replace(" ", "_") for col in additional_meta}
-    names["qcrole"] = "sample_type"
+    names[qcrole] = "sample_type"
     injection_meta = injection_meta.rename(columns=names)
 
     injection_meta.loc[:, "date_extracted"] = pd.to_datetime(
@@ -759,12 +770,11 @@ def filter_features_mask(data, smdata, fmdata, form_params):
     else:
         missing_cutoff = form_params["missing_cutoff"]
 
-    to_keep = (
-        to_keep
-        & (fmdata[miss_column] <= missing_cutoff)
-        & (fmdata["PREFA CVs"] <= form_params["cv_cutoff"] / 100)
-        & (fmdata["PREFB CVs"] <= form_params["cv_cutoff"] / 100)
-    )
+    to_keep = to_keep & (fmdata[miss_column] <= missing_cutoff)
+    if len(pref_as) > 0:
+        to_keep = to_keep & (fmdata["PREFA CVs"] <= form_params["cv_cutoff"] / 100)
+    if len(pref_bs) > 0:
+        to_keep = to_keep & (fmdata["PREFB CVs"] <= form_params["cv_cutoff"] / 100)
 
     if "Primary" in fmdata.columns:
         to_keep = to_keep & fmdata["Primary"].fillna(False)

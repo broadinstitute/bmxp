@@ -12,7 +12,7 @@ from tqdm import tqdm
 from scipy import interpolate
 from bmxp import FMDATA, IMDATA, POOL_INJ_TYPES
 
-__version__ = "0.2.0"
+__version__ = "0.2.3"
 
 
 class DriftCorrection:  # pylint: disable=too-many-instance-attributes
@@ -148,7 +148,7 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
 
         # check that batch ends aren't on dropped samples
         non_dc = sample_information[self.injection_type].str.startswith(
-            tuple(["not_used", "brpp", "mm", "blank", "other"])
+            tuple(["not_used", "brpp", "mm", "blank", "other", "tube_blank", "ms2"])
         )
         will_drop = ~in_data & non_dc
         end_drops = sample_information.loc[will_drop, self.batches_label] == "batch end"
@@ -415,18 +415,17 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         self.correction_params[interpolation.lower()] = (pool, override)
         interpolation = methods[interpolation.lower()]
         pool_names = self.pools[pool]
-        pool_medians = self.data[pool_names].apply(
-            lambda row: 1 if row.isnull().all() else row.median(), axis=1
-        )
+        pool_medians = self.data[pool_names].median(axis=1)
+        pool_medians = pool_medians.fillna(1)
         batches = self.batches["override"] if override else self.batches["default"]
         self._set_pool_roles(pool)
 
         # begin the scaling
-        scalers = pd.DataFrame(index=self.data.index)
+        scalers = [[] for _ in self.data.index]
         data = self.data.values
-        self.cvs[self.Batches_Skipped] = [[] for _ in self.cvs.index]
 
-        self._flag_skipped_rows(pool, max_missing_percent, len(batches))
+        to_skip = self._flag_skipped_rows(pool, max_missing_percent, len(batches))
+        batches_skipped = [[] for _ in self.cvs.index]
 
         for this_batch in batches:
             batch_pools = this_batch.loc[this_batch.isin(pool_names)]
@@ -436,6 +435,7 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
             this_batch = pd.DataFrame(this_batch).join(
                 self.sample_info[self.injection_order]
             )
+            skipped_str = f"{this_batch.iloc[0,0]} to {this_batch.iloc[-1,0]}"
 
             if len(batch_pools) == 0:
                 raise ValueError(
@@ -446,23 +446,24 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
                 )
 
             batch_scalers = []
+            batch_pool_values = data[:, np.isin(self.data.columns, batch_pools.index)]
+            batch_pool_order = batch_pools[self.injection_order].values
+
             for row in tqdm(range(len(data))):
-                pool_values = data[row, np.isin(self.data.columns, batch_pools.index)]
-                pool_order = batch_pools[self.injection_order].values[pool_values > 0]
+                pool_values = batch_pool_values[row]
+                pool_order = batch_pool_order[pool_values > 0]
                 pool_values = pool_values[pool_values > 0]
 
                 # skip if previously flagged
-                if self.cvs.loc[row, self.Batches_Skipped] == "Not Pool Corrected":
+                if to_skip[row]:
                     batch_scalers.append([pool_medians[row]] * len(this_batch))
 
-                # skip batch if there are no pools
+                # skip if there are no pools
                 elif len(pool_order) < 1:
                     batch_scalers.append([pool_medians[row]] * len(this_batch))
-                    self.cvs.loc[row, self.Batches_Skipped].append(
-                        f"{this_batch.iloc[0,0]} to {this_batch.iloc[-1,0]}"
-                    )
+                    batches_skipped[row].append(skipped_str)
 
-                # "nearest neighbor" if there is 1 pool and this isn't the only batch
+                # "nearest neighbor" if there is 1 pool
                 elif len(pool_order) < 2:
                     batch_scalers.append([pool_values[0]] * len(this_batch))
 
@@ -472,13 +473,15 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
                             this_batch, pool_order, pool_values, self.injection_order
                         )
                     )
-
-            scalers = scalers.join(
-                pd.DataFrame(batch_scalers, columns=this_batch[self.injection_id])
-            )
+            scalers = np.concatenate((scalers, batch_scalers), axis=1)
+        scalers = pd.DataFrame(scalers, columns=self.data.columns)
         scalers = scalers.divide(pool_medians, axis="index")
-
         self.data = self.data.divide(scalers)
+
+        self.cvs[self.Batches_Skipped] = [
+            "Not Pool Corrected" if to_skip[i] or len(item) == len(batches) else item
+            for i, item in enumerate(batches_skipped)
+        ]
 
     def _set_pool_roles(self, pool):
         dc_pools = set(self.pools[pool].index)
@@ -494,16 +497,22 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         self.sample_info.loc[self.not_used_pools.index, self.QCRole] = "QC-not_used"
 
     def _flag_skipped_rows(self, pool, max_missing_percent, batch_count):
+        """
+        Flag rows that can't be drift corrected: they have zero pools, they have fewer
+        than the minimum required pools, or there is only one batch and only one pool
+        :param pool: str, drift correction pool (typically PREFA or PREFB)
+        :param max_missing_percent: int, max percent of pools allowed to be missing
+        :param batch_count: int, number of batches used for pool correction
+        :return: list of bools, skip or don't skip for each row of data
+        """
         pools = np.isin(self.data.columns, self.pools[pool])
-        for i, row in enumerate(self.data.values):
-            pool_count = sum(row[pools] > 0)
-            if (
-                pool_count == 0
-                or pool_count / len(self.pools[pool])
-                < (100 - max_missing_percent) / 100
-                or (batch_count < 2 and pool_count < 2)
-            ):
-                self.cvs.loc[i, self.Batches_Skipped] = "Not Pool Corrected"
+        min_present = (1 - max_missing_percent / 100) * len(self.pools[pool])
+        pool_data = self.data.loc[:, pools].values
+        pool_counts = np.sum(pool_data > 0, axis=1)
+        to_skip = (pool_counts == 0) | (pool_counts < min_present)
+        if batch_count == 1:
+            to_skip = to_skip | (pool_counts == 1)
+        return to_skip
 
     @staticmethod
     def _nn_interpolation(

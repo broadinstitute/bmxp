@@ -24,7 +24,8 @@ import platform
 from enum import Enum
 import numpy as np
 
-__version__ = "0.0.1"
+__version__ = "0.0.3"
+
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
 if platform.system() == "Windows":
@@ -575,7 +576,7 @@ class RawFile:
                 output.append([key, value])
 
         output.append(["RAW"])
-        if len(raw) > 0 and include_raw:
+        if include_raw and len(raw) > 0:
             output.append(list(raw[0].keys()))
             for scan in raw:
                 temp_output = list(scan.values())
@@ -604,52 +605,57 @@ class RawFile:
 
     def aggregate(self, raw, ppm):
         """
-        Aggregate MSn fragments with similar masses and equal NCEs
+        Aggregate MSn fragments with similar masses and equal NCEs.
         :param raw: list of dicts; MSn fragment data, including keys: "mz", "intensity",
-        "chemicalFormula", "formulaPpm", "NCE" at minimum
+                    "chemicalFormula", "formulaPpm", "NCE" at minimum
         :param ppm: float, permitted delta ppm for grouping MZs
         :return:
             raw: list of dicts, raw input updated with aggregateNumber
             aggregated: list of dicts, aggregated fragments
         """
         aggregated = []
-        if len(raw) <= 0:
+        if not raw:
             return raw, aggregated
-        raw_copy = raw[:]
+        raw_copy = raw.copy()  # Clearer than raw[:]
         raw_copy.sort(reverse=True, key=lambda e: e["intensity"])
-        i = 0
+        active = np.ones(len(raw_copy), dtype=bool)
+        group_idx = 0
+        data = np.array([(e["mz"], e["intensity"], e["NCE"]) for e in raw_copy])
 
-        while len(raw_copy) > 0:
-            center_mz = raw_copy[0]["mz"]
-            min_mz = center_mz - (center_mz / 1000000) * ppm
-            max_mz = center_mz + (center_mz / 1000000) * ppm
-            energy = raw_copy[0]["NCE"]
+        for i, raw_feature in enumerate(raw_copy):
+            if not active[i]:
+                continue
 
-            matches_mask = [
-                e["mz"] >= min_mz and e["mz"] <= max_mz and e["NCE"] == energy
-                for e in raw_copy
-            ]
-            matches = [e for i, e in enumerate(raw_copy) if matches_mask[i]]
-            average_mz = np.average(
-                [e["mz"] for e in matches],
-                weights=[e["intensity"] for e in matches],
+            center_mz = data[i, 0]
+            ppm_factor = (center_mz / 1_000_000) * ppm
+            min_mz, max_mz = center_mz - ppm_factor, center_mz + ppm_factor
+            energy = data[i, 2]
+            matched = (
+                active
+                & (data[:, 2] == energy)
+                & (data[:, 0] >= min_mz)
+                & (data[:, 0] <= max_mz)
             )
+            if not matched.any():
+                continue
+
+            average_mz = np.average(data[matched, 0], weights=data[matched, 1])
             aggregated.append(
                 {
-                    "aggregateNumber": i,
+                    "aggregateNumber": group_idx,
                     "mz": average_mz,
-                    "intensity": sum(e["intensity"] for e in matches),
-                    "chemicalFormula": matches[0]["chemicalFormula"],
-                    "formulaPpm": matches[0]["formulaPpm"],
+                    "intensity": data[matched, 1].sum(),
+                    "chemicalFormula": raw_feature["chemicalFormula"],
+                    "formulaPpm": raw_feature["formulaPpm"],
                     "NCE": energy,
-                    "scanCount": len(matches),
+                    "scanCount": matched.sum(),
                 }
             )
-            # matches is a shallow copy of raw
-            for scan in matches:
-                scan["aggregateNumber"] = i
-            i += 1
-            raw_copy = [e for i, e in enumerate(raw_copy) if not matches_mask[i]]
+            matched_indices = np.where(matched)[0]
+            for j in matched_indices:
+                raw_copy[j]["aggregateNumber"] = group_idx
+            group_idx += 1
+            active[matched_indices] = False
         return raw, aggregated
 
 

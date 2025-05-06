@@ -196,10 +196,9 @@ def handle_median_plot_labels(values, inj_metadata, sample_names, leg_handles):
     leg = plt.legend(title="color", handles=handles)
     plt.gca().add_artist(leg)
     plt.ylim(bottom=0, top=1.05 * values.max())
-    col_change_vals = inj_metadata.reset_index()["column_number"].diff()
-    col_change = inj_metadata.reset_index()[
-        (col_change_vals != 0) & (~col_change_vals.isna())
-    ]
+    col_vals = inj_metadata.reset_index()["column_number"]
+    col_change_vals = col_vals == col_vals.shift().fillna(col_vals)
+    col_change = inj_metadata.reset_index()[~col_change_vals]
     col_change_x = col_change["injection_order"]
     plt.vlines(
         x=col_change_x,
