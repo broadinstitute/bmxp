@@ -12,7 +12,7 @@ from tqdm import tqdm
 from scipy import interpolate
 from bmxp import FMDATA, IMDATA, POOL_INJ_TYPES
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 
 class DriftCorrection:  # pylint: disable=too-many-instance-attributes
@@ -83,6 +83,13 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         self.rdata = self.data.copy()
         self.cvs = pd.DataFrame(index=self.rdata.index)
         self.sample_info = sample_information
+        self.sample_info[self.batches_label] = find_batch_start_end(
+            self.sample_info,
+            injection_order_label=self.injection_order,
+            column_number_label=self.column_number,
+            batches_label=self.batches_label,
+            qc_role_label=self.QCRole,
+        )
         self.pools, self.not_used_pools = self._find_pools(pool_inj_types)
         self.batches["default"], self.batches["override"] = self._gen_batches()
 
@@ -109,9 +116,9 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         sample_information = sample_information.dropna(axis="index", how="all")
         has_col_name = ~raw_data.columns.str.startswith("Unnamed: ")
         raw_data = raw_data.loc[:, has_col_name]
-        sample_information[self.batches_label] = sample_information[
-            self.batches_label
-        ].fillna("")
+        sample_information[self.batches_label] = (
+            sample_information[self.batches_label].fillna("").str.replace("_", " ")
+        )
         sample_information = sample_information.astype(
             {self.injection_type: str, self.batches_label: str}
         )
@@ -146,25 +153,12 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         first_sample = sample_information.loc[in_data, self.injection_id].iloc[0]
         samples = raw_data.loc[:, first_sample:].columns
 
-        # check that batch ends aren't on dropped samples
         non_dc = sample_information[self.injection_type].str.startswith(
             tuple(["not_used", "brpp", "mm", "blank", "other", "tube_blank", "ms2"])
         )
-        will_drop = ~in_data & non_dc
-        end_drops = sample_information.loc[will_drop, self.batches_label] == "batch end"
-        if sum(end_drops) > 0:
-            raise ValueError(
-                "The 'batch end' label cannot be applied to injections that are "
-                "not present in the dataset. Please move the following batch ends "
-                "to valid injections: "
-                + ", ".join(
-                    sample_information.loc[
-                        end_drops.index[end_drops], self.injection_id
-                    ].values
-                )
-            )
 
         # flag unused samples
+        will_drop = ~in_data & non_dc
         sample_information.loc[will_drop, self.QCRole] = "NA"
 
         if len(samples) > len(sample_information.loc[~will_drop]):
@@ -272,18 +266,6 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
 
         default_batches = []
         override_batches = []
-
-        # accept "batch_end" and "batch end" as equivalent
-        self.sample_info[self.batches_label] = self.sample_info[
-            self.batches_label
-        ].str.replace("_", " ")
-        for item in set(self.sample_info[self.batches_label]):
-            if item.lower() not in ("batch start", "batch end", ""):
-                raise ValueError(
-                    f"An invalid label is present in the batches column: '{item}'. "
-                    f"Valid batch labels are 'batch start' and 'batch end'."
-                )
-
         valid = self.sample_info[self.QCRole] != "NA"
 
         # default batches split by column number
@@ -293,18 +275,11 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
             ]
             if len(batch) > 0:
                 default_batches.append(batch)
-                # label column ends as batch ends, whether the user has done so or not
-                self.sample_info.loc[batch.index[-1], self.batches_label] = "batch end"
 
-        # label very first injection as batch start, whether the user has done so or not
-        self.sample_info.loc[self.sample_info.index[0], self.batches_label] = (
-            "batch start"
-        )
-
-        # override batches split by user-indicated batch end
+        # override batches split by user-indicated batch_end
         sample_info = self.sample_info[valid]
         batch_info = sample_info[self.batches_label].str.lower()
-        ends = batch_info == "batch end"
+        ends = batch_info == "batch_end"
         starts = np.roll(ends, 1)
 
         for start, end in zip(np.where(starts)[0], np.where(ends)[0]):
@@ -313,21 +288,21 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
 
             if (
                 sample_info.loc[sample_info.index[start], self.batches_label]
-                != "batch start"
+                != "batch_start"
             ):
                 warn(
                     "The following sample is being used as a batch start but lacks a "
-                    "'batch start' label: "
+                    "'batch_start' label: "
                     + sample_info.loc[sample_info.index[start], self.injection_id]
                 )
 
-            contains_starts = np.where(this_batch[self.batches_label] == "batch start")[
+            contains_starts = np.where(this_batch[self.batches_label] == "batch_start")[
                 0
             ]
             if (contains_starts > 0).any():
                 warn(
                     "The following samples are NOT being used as a batch start but "
-                    "have a 'batch start' label: "
+                    "have a 'batch_start' label: "
                     + ", ".join(
                         [
                             this_batch.loc[this_batch.index[i], self.injection_id]
@@ -605,10 +580,13 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
 
         output = self.data.apply(np.floor)
         output = output.replace(0, np.nan)
-        output = output.astype("Int64")
 
+        if self.met_col in self.metadata.columns:
+            to_join = [self.cvs, self.metadata.loc[:, self.met_col], output]
+        else:
+            to_join = [self.cvs, output]
         output = self.metadata.loc[:, self.metadata.columns != self.met_col].join(
-            [self.cvs, self.metadata.loc[:, self.met_col], output]
+            to_join
         )
         if to_string:
             return (
@@ -629,3 +607,68 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
                 filepath,
             )
         return self.sample_info.to_csv(filepath, index=False)
+
+
+def find_batch_start_end(
+    info,
+    injection_order_label=IMDATA["injection_order"],
+    column_number_label=IMDATA["column_number"],
+    batches_label=IMDATA["batches"],
+    qc_role_label=IMDATA["QCRole"],
+):
+    """
+    Set the batch start and end labels in the sample information DataFrame. Assumes info
+    already has the required columns, is sorted by injection order, and has dropped
+    injections flagged as "NA".
+    :param info: DataFrame, sample information
+    :param injection_order_label: str, column name for injection order
+    :param batches_label: str, column name for batch labels
+    :param qc_role_label: str, column name for QC role
+    :return: DataFrame, updated sample information with batch start and end labels
+    """
+    info = info.copy()
+    # accept "batch_end" and "batch end" as equivalent
+    info[batches_label] = info[batches_label].str.replace(" ", "_")
+    for item in set(info[batches_label]):
+        if item.lower() not in ("batch_start", "batch_end", ""):
+            raise ValueError(
+                f"An invalid label is present in the batches column: '{item}'. Valid "
+                f"batch labels are 'batch_start' and 'batch_end'."
+            )
+
+    valid = info[qc_role_label] != "NA"
+    # label first valid injection as batch_start
+    info.loc[info.loc[valid].index[0], batches_label] = "batch_start"
+
+    # label last valid injection for each column as batch_end
+    ends = info.loc[valid, column_number_label].drop_duplicates(keep="last")
+    info.loc[ends.index, batches_label] = "batch_end"
+
+    # check that batch_ends aren't on dropped samples
+    end_drops = info.loc[~valid, batches_label] == "batch_end"
+    if sum(end_drops) > 0:
+        end_drop_indices = end_drops.index[end_drops]
+
+        # get valid samples and their injection order
+        valid_samples = info.loc[valid]
+        valid_orders = valid_samples[injection_order_label]
+
+        for idx in end_drop_indices:
+            # find the nearest valid sample with an earlier injection order
+            current_order = info.loc[idx, injection_order_label]
+            earlier_valid = valid_samples[valid_orders < current_order]
+            if earlier_valid.empty:
+                raise ValueError(
+                    f"Cannot move 'batch_end' label for injection '{idx}' because "
+                    "no valid injection exists before it."
+                )
+
+            # move the batch_end label to the nearest valid sample
+            nearest_valid_idx = earlier_valid.index[-1]
+            info.loc[nearest_valid_idx, batches_label] = "batch_end"
+            info.loc[idx, batches_label] = ""
+        warn(
+            "Some 'batch_end' labels were on injections that are not present in the "
+            "dataset and have been moved to the nearest valid injections."
+        )
+    return info[batches_label]

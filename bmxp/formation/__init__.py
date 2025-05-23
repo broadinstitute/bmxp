@@ -5,6 +5,7 @@ import io
 import copy
 from scipy.stats import zscore
 import numpy as np
+import pandas as pd
 from sklearn.decomposition import PCA
 import matplotlib
 from matplotlib.backends.backend_pdf import PdfPages
@@ -19,7 +20,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.10"
+__version__ = "0.2.11"
 
 
 def report(
@@ -493,7 +494,12 @@ def _sort_dataset(final_dataset):
                     "subClass",
                     "MZ_Calculated",
                     "RT",
-                ]
+                ],
+                key=lambda col: (
+                    col
+                    if not pd.api.types.is_string_dtype(col.fillna(""))
+                    else col.str.lower()
+                ),
             )
             .values
         )

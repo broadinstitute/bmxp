@@ -117,6 +117,23 @@ def test_data_validation(df_dc_input_1, df_sample_info_1):
     assert "usable samples" in str(e.value)
 
 
+def test_batch_start_end(df_sample_info_1):
+    # batch_end shifts up to nearest valid injection
+    info = df_sample_info_1.copy()
+    info.loc[16, ["batches", "QCRole"]] = ["batch_end", "NA"]
+    info[["batches", "QCRole"]] = info[["batches", "QCRole"]].fillna("")
+    batches = b.find_batch_start_end(info)
+    assert batches.loc[15] == "batch_end" and batches.loc[16] == ""
+
+    info = df_sample_info_1.copy()
+    info.loc[7, "batches"] = "batch_end"
+    info.loc[:7, "QCRole"] = "NA"
+    info[["batches", "QCRole"]] = info[["batches", "QCRole"]].fillna("")
+    with pytest.raises(ValueError) as e:
+        b.find_batch_start_end(info)
+    assert "Cannot move " in str(e.value)
+
+
 def test_batch_generation(
     df_dc_input_1,
     df_sample_info_1,
