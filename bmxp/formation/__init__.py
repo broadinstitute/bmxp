@@ -20,7 +20,67 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.11"
+__version__ = "0.2.12"
+
+
+def parse_formatted(dataset):
+    """
+    Given a formatted dataset, parses it into the abundances, injection metadata,
+    feature metadta, and the sample names
+    """
+    if isinstance(dataset, pd.DataFrame):
+        df = dataset
+    else:
+        try:
+            df = pd.read_csv(dataset, header=None)
+        except Exception as e:  # pylint: disable=broad-except
+            try:
+                df = pd.read_excel(dataset, engine="openpyxl", header=None)
+            except:
+                raise ValueError(
+                    "Your file does not appear to be a csv or xlsx."
+                ) from e
+
+    # Find the index of the first non-missing value
+    row = df.iloc[0, :].copy()
+    row.replace("", np.nan, inplace=True)
+    pivot_col = df.columns.get_loc(row.first_valid_index())
+
+    row = df.iloc[:, 0].copy()
+    row.replace("", np.nan, inplace=True)
+    pivot_row = df.index.get_loc(row.first_valid_index())
+
+    pivot_value = df.iloc[pivot_row, pivot_col].lower()
+
+    if pivot_col < 0 or pivot_row < 0:
+        raise ValueError("Your dataset is blank on either the first row or column.")
+
+    feature_metadata = df.iloc[pivot_row + 1 :, : pivot_col + 1].copy()
+    feature_metadata.columns = df.iloc[pivot_row, : pivot_col + 1]
+
+    inj_metadata = df.iloc[: pivot_row + 1, pivot_col:].copy()
+    inj_metadata = inj_metadata.transpose().reset_index(drop=True)
+    inj_metadata.columns = inj_metadata.iloc[0]
+    inj_metadata = inj_metadata.drop(0)
+    inj_metadata.columns = inj_metadata.columns.str.lower()
+    # makes column name unique - https://stackoverflow.com/questions/24685012
+    cols = pd.Series(inj_metadata.columns)
+    for dup in inj_metadata.columns[inj_metadata.columns.duplicated(keep=False)]:
+        cols[inj_metadata.columns.get_loc(dup)] = [
+            dup + "." + str(d_idx) if d_idx != 0 else dup
+            for d_idx in range(inj_metadata.columns.get_loc(dup).sum())
+        ]
+    inj_metadata.columns = cols
+    # check and create necessary columns
+
+    sample_data = df.iloc[pivot_row + 1 :, pivot_col + 1 :]
+    sample_names = df.iloc[pivot_row, pivot_col + 1 :].astype(str)
+    sample_data.columns = inj_metadata.index.astype(str) + " (" + sample_names + ")"
+    sample_data.index = feature_metadata.index.copy()
+    sample_data = sample_data.replace("", "nan")
+    sample_data = sample_data.astype(float)
+    inj_metadata = inj_metadata.drop(pivot_value, axis=1)
+    return sample_data, inj_metadata, feature_metadata, sample_names
 
 
 def report(
@@ -402,67 +462,18 @@ def report(
 def report_from_formatted(
     dataset, dataset_name=None, out_filepath=None, write_pdf=True
 ):
-    if isinstance(dataset, pd.DataFrame):
-        if dataset_name is None:
+    if dataset_name is None:
+        if isinstance(dataset, pd.DataFrame):
             dataset_name = "Dataset"
-        df = dataset
-    else:
-        if dataset_name is None:
+        else:
             dataset_name = dataset.split("\\")[-1].split("/")[-1]
-        try:
-            df = pd.read_csv(dataset, header=None)
-        except Exception as e:  # pylint: disable=broad-except
-            try:
-                df = pd.read_excel(dataset, engine="openpyxl", header=None)
-            except:
-                raise ValueError(
-                    "Your file does not appear to be a csv or xlsx."
-                ) from e
 
-    # Find the index of the first non-missing value
-    row = df.iloc[0, :].copy()
-    row.replace("", np.nan, inplace=True)
-    pivot_col = df.columns.get_loc(row.first_valid_index())
-
-    row = df.iloc[:, 0].copy()
-    row.replace("", np.nan, inplace=True)
-    pivot_row = df.index.get_loc(row.first_valid_index())
-
-    pivot_value = df.iloc[pivot_row, pivot_col].lower()
-
-    if pivot_col < 0 or pivot_row < 0:
-        raise ValueError("Your dataset is blank on either the first row or column.")
-
-    feature_metadata = df.iloc[pivot_row + 1 :, : pivot_col + 1].copy()
-    feature_metadata.columns = df.iloc[pivot_row, : pivot_col + 1]
-
-    inj_metadata = df.iloc[: pivot_row + 1, pivot_col:].copy()
-    inj_metadata = inj_metadata.transpose().reset_index(drop=True)
-    inj_metadata.columns = inj_metadata.iloc[0]
-    inj_metadata = inj_metadata.drop(0)
-    inj_metadata.columns = inj_metadata.columns.str.lower()
-    # makes column name unique - https://stackoverflow.com/questions/24685012
-    cols = pd.Series(inj_metadata.columns)
-    for dup in inj_metadata.columns[inj_metadata.columns.duplicated(keep=False)]:
-        cols[inj_metadata.columns.get_loc(dup)] = [
-            dup + "." + str(d_idx) if d_idx != 0 else dup
-            for d_idx in range(inj_metadata.columns.get_loc(dup).sum())
-        ]
-    inj_metadata.columns = cols
-    # check and create necessary columns
-
-    sample_data = df.iloc[pivot_row + 1 :, pivot_col + 1 :]
-    sample_names = df.iloc[pivot_row, pivot_col + 1 :].astype(str)
-    sample_data.columns = inj_metadata.index.astype(str) + " (" + sample_names + ")"
-    sample_data.index = feature_metadata.index.copy()
-    sample_data = sample_data.replace("", "nan")
-    sample_data = sample_data.astype(float)
-    inj_metadata = inj_metadata.drop(pivot_value, axis=1)
+    sample_data, imdata, fmdata, sample_names = parse_formatted(dataset, dataset_name)
 
     return report(
         sample_data,
-        inj_metadata,
-        feature_metadata,
+        imdata,
+        fmdata,
         dataset_name,
         sample_names,
         out_filepath,
@@ -474,10 +485,10 @@ def _sort_dataset(final_dataset):
     """Sort annotated metabolites by order, then, class MZ, RT;
     sort nontargeted by RT, MZ"""
     # force internal standards sort to top
+    superclass_present = "superClass" in final_dataset
     final_dataset.loc[
         final_dataset["HMDB_ID"].str.lower() == "internal standard", "superClass"
     ] = "AAAAAAAAAAAAAA"
-
     # make sure all annotated features are above nontargeted features
     final_dataset = final_dataset.sort_values(by=["Metabolite"])
 
@@ -510,6 +521,8 @@ def _sort_dataset(final_dataset):
     final_dataset.loc[~annotated, :] = (
         final_dataset.loc[~annotated, :].sort_values(by=["RT", "MZ"]).values
     )
+    if not superclass_present:
+        del final_dataset["superClass"]
 
     return final_dataset
 
