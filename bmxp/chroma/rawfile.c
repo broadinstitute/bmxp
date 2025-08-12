@@ -252,15 +252,22 @@ Xic Pull_xic(RawFile* rawFile, float rt1, float rt2, float mz, float ppm, int32_
 }
 
 Xic Pull_chrom_xic(RawFile* rawFile, float rt1, float rt2, float precursor, float product, int pullMzs) {
-  Chromatogram* chrom;
-  // find the right chromatogram
+  Chromatogram* chrom = NULL;
+  float best_rt_diff = INFINITY;
+  float center = (rt1 + rt2) / 2;
+
   for (uint32_t i = 0; i < rawFile->numChroms; i++) {
-    chrom = &(rawFile->chromatograms[i]);
-    if ((fabs(chrom->precursorMz - precursor) <= .5) && (fabs(chrom->productMz - product) <= .5) &&
-        (rt2 >= float_min(chrom->rts, chrom->length)) && (rt1 <= float_max(chrom->rts, chrom->length))) {
-      break;
-    } else
-      chrom = NULL;
+    Chromatogram* c = &rawFile->chromatograms[i];
+
+    if ((fabs(c->precursorMz - precursor) <= .05) && (fabs(c->productMz - product) <= .05) &&
+        (rt2 >= float_min(c->rts, c->length)) && (rt1 <= float_max(c->rts, c->length))) {
+      float xic_center = (c->rts[0] + c->rts[c->length - 1]) / 2;
+      float rt_diff = fabs(xic_center - center);
+      if (rt_diff < best_rt_diff) {
+        best_rt_diff = rt_diff;
+        chrom = c;
+      }
+    }
   }
 
   if (chrom == NULL) {

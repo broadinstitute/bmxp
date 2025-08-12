@@ -24,7 +24,7 @@ import platform
 from enum import Enum
 import numpy as np
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 
 dir_path = os.path.dirname(os.path.realpath(__file__))

@@ -12,7 +12,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.dates as mdates
 import xlsxwriter
 from bmxp.gravity import spearman, pearson
-from bmxp import IMDATA
+from bmxp import FMDATA, IMDATA
 
 matplotlib.use("agg")
 
@@ -20,7 +20,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.12"
+__version__ = "0.2.13"
 
 
 def parse_formatted(dataset):
@@ -42,13 +42,19 @@ def parse_formatted(dataset):
                 ) from e
 
     # Find the index of the first non-missing value
-    row = df.iloc[0, :].copy()
-    row.replace("", np.nan, inplace=True)
-    pivot_col = df.columns.get_loc(row.first_valid_index())
+    first_row = df.iloc[0, :].copy()
+    first_row.replace("", np.nan, inplace=True)
+    pivot_col = df.columns.get_loc(first_row.first_valid_index())
 
-    row = df.iloc[:, 0].copy()
-    row.replace("", np.nan, inplace=True)
-    pivot_row = df.index.get_loc(row.first_valid_index())
+    first_col = df.iloc[:, 0].copy()
+    first_col.replace("", np.nan, inplace=True)
+    pivot_row = df.index.get_loc(first_col.first_valid_index())
+
+    if pivot_row == 0 and pivot_col == 0:
+        # there's no imdata, use the last recognized fmdata header as the pivot
+        for header in FMDATA.values():
+            if header in first_row.values:
+                pivot_col = max(pivot_col, first_row[first_row == header].index[-1])
 
     pivot_value = df.iloc[pivot_row, pivot_col].lower()
 
@@ -364,42 +370,44 @@ def report(
             graph_index = i
         # reset graph_index to create page break between PCAs and other plots
         graph_index = 0
-        is_ids = fmdata.loc[internal_standard_s_data.index, "Annotation_ID"]
-        internal_standard_s_data.reset_index().apply(
-            lambda row: plot_formation_line_plot(
-                row,
-                graph_index + 3 * row.name,
-                smdata,
-                palette,
-                pdf,
-                "injection_type",
-                ann_id=is_ids.iloc[row.name],
-            ),
-            axis=1,
-        )
-        graph_index += 3 * len(internal_standard_s_data.index)
-        norm = internal_standard_s_data.apply(lambda row: row / row.median(), axis=1)
-        line_colors = []
-        num_inj_types = len(smdata["injection_type"].unique())
-        for i in range(num_inj_types, num_inj_types + len(norm.index)):
-            line_colors.append(
-                tuple(x / 255 for x in palette[i % len(palette)][:-1]) + (0.7,)
-            )
-
-        norm.reset_index().apply(
-            lambda row: plot_formation_line_plot(
-                row,
-                graph_index,
-                smdata,
-                palette,
-                pdf,
-                "injection_type",
-                line_colors[row.name],
-                True,
-            ),
-            axis=1,
-        )
         if not internal_standard_s_data.empty:
+            is_ids = fmdata.loc[internal_standard_s_data.index, "Annotation_ID"]
+            internal_standard_s_data.reset_index().apply(
+                lambda row: plot_formation_line_plot(
+                    row,
+                    graph_index + 3 * row.name,
+                    smdata,
+                    palette,
+                    pdf,
+                    "injection_type",
+                    ann_id=is_ids.iloc[row.name],
+                ),
+                axis=1,
+            )
+            graph_index += 3 * len(internal_standard_s_data.index)
+            norm = internal_standard_s_data.apply(
+                lambda row: row / row.median(), axis=1
+            )
+            line_colors = []
+            num_inj_types = len(smdata["injection_type"].unique())
+            for i in range(num_inj_types, num_inj_types + len(norm.index)):
+                line_colors.append(
+                    tuple(x / 255 for x in palette[i % len(palette)][:-1]) + (0.7,)
+                )
+
+            norm.reset_index().apply(
+                lambda row: plot_formation_line_plot(
+                    row,
+                    graph_index,
+                    smdata,
+                    palette,
+                    pdf,
+                    "injection_type",
+                    line_colors[row.name],
+                    True,
+                ),
+                axis=1,
+            )
             plt.ylim(bottom=0)
             leg_labels = [f"{k} - {v}" for k, v in zip(norm.index, is_ids)]
             handles_two = [
@@ -408,7 +416,7 @@ def report(
             ]
             leg2 = plt.legend(title="color", handles=handles_two, loc=4)
             plt.gca().add_artist(leg2)
-        graph_index += 3
+            graph_index += 3
         sample_medians = sample_data.fillna(0).median()
         plot_formation_line_plot(
             sample_medians,
@@ -468,7 +476,7 @@ def report_from_formatted(
         else:
             dataset_name = dataset.split("\\")[-1].split("/")[-1]
 
-    sample_data, imdata, fmdata, sample_names = parse_formatted(dataset, dataset_name)
+    sample_data, imdata, fmdata, sample_names = parse_formatted(dataset)
 
     return report(
         sample_data,

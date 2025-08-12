@@ -12,7 +12,7 @@ from tqdm import tqdm
 from scipy import interpolate
 from bmxp import FMDATA, IMDATA, POOL_INJ_TYPES
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 
 class DriftCorrection:  # pylint: disable=too-many-instance-attributes
@@ -129,6 +129,9 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
             raise TypeError(
                 "There are missing or non-numeric values in the injection_order."
             ) from e
+
+        if sample_information[self.column_number].isnull().any():
+            raise ValueError("There are missing values in the column_number.")
 
         if not sample_information[self.injection_order].is_unique:
             raise ValueError("There are duplicate values in the injection_order.")
