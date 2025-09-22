@@ -20,7 +20,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.13"
+__version__ = "0.2.14"
 
 
 def parse_formatted(dataset):
@@ -565,6 +565,17 @@ def harmonize_metadata(data, injectionset, sampleset):
     pools = combined.index[combined["broad_id"].str.lower() == "pref"]
     missing = pd.isnull(combined["program_id"])
     if "reporting_name" in combined.columns:
+        mismatches = combined.loc[
+            (combined["program_id"] != combined["reporting_name"])
+            & ~pd.isnull(combined["program_id"])
+            & ~pd.isnull(combined["reporting_name"])
+        ]
+        if len(mismatches) > 0:
+            warnings.append(
+                "There are mismatches between program_ids and reporting_names. Please "
+                + "review and confirm program_ids for the following samples before "
+                + f"sharing results: {', '.join(mismatches.index)}"
+            )
         combined.loc[missing, "program_id"] = combined.loc[missing, "reporting_name"]
     # name pools if possible
     elif pools.str.contains("PREF").all():
@@ -583,12 +594,13 @@ def harmonize_metadata(data, injectionset, sampleset):
 
     qcrole = IMDATA["QCRole"]
     qcrole_map = {
-        "tube_blank": "Tube_Blank",
-        "blank": "Blank",
-        "not_used": "Not_Used",
-        "mm": "Master_Mix",
-        "ms2": "MS2",
-        "brpp": "BRPP",
+        "tube_blank": "QC-Tube_Blank",
+        "blank": "QC-Blank",
+        "not_used": "QC-Not_Used",
+        "mm": "QC-Master_Mix",
+        "ms2": "QC-MS2",
+        "brpp": "QC-BRPP",
+        "bridge_pref": "QC-Bridge_PREF",
     }
 
     if qcrole in combined.columns:
