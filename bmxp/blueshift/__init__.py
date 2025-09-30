@@ -12,7 +12,7 @@ from tqdm import tqdm
 from scipy import interpolate
 from bmxp import FMDATA, IMDATA, POOL_INJ_TYPES
 
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 
 
 class DriftCorrection:  # pylint: disable=too-many-instance-attributes
@@ -156,23 +156,12 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         first_sample = sample_information.loc[in_data, self.injection_id].iloc[0]
         samples = raw_data.loc[:, first_sample:].columns
 
-        non_dc = sample_information[self.injection_type].str.startswith(
-            tuple(
-                [
-                    "not_used",
-                    "brpp",
-                    "mm",
-                    "blank",
-                    "other",
-                    "tube_blank",
-                    "ms2",
-                    "bridge_pref",
-                ]
-            )
+        to_dc = sample_information[self.injection_type].str.startswith(
+            tuple(["pref", "sample"])
         )
 
         # flag unused samples
-        will_drop = ~in_data & non_dc
+        will_drop = ~in_data & ~to_dc
         sample_information.loc[will_drop, self.QCRole] = "NA"
 
         if len(samples) > len(sample_information.loc[~will_drop]):

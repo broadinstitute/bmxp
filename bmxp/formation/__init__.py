@@ -20,7 +20,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.14"
+__version__ = "0.2.15"
 
 
 def parse_formatted(dataset):
@@ -492,15 +492,19 @@ def report_from_formatted(
 def _sort_dataset(final_dataset):
     """Sort annotated metabolites by order, then, class MZ, RT;
     sort nontargeted by RT, MZ"""
-    # force internal standards sort to top
-    superclass_present = "superClass" in final_dataset
-    final_dataset.loc[
-        final_dataset["HMDB_ID"].str.lower() == "internal standard", "superClass"
-    ] = "AAAAAAAAAAAAAA"
     # make sure all annotated features are above nontargeted features
     final_dataset = final_dataset.sort_values(by=["Metabolite"])
-
     annotated = ~pd.isnull(final_dataset["Metabolite"])
+
+    # force internal standards sort to top, missing orderNum next
+    ordernum_present = "orderNum" in final_dataset
+    final_dataset.loc[
+        final_dataset["HMDB_ID"].str.lower() == "internal standard", "orderNum"
+    ] = -99
+    final_dataset.loc[annotated, "orderNum"] = final_dataset.loc[
+        annotated, "orderNum"
+    ].fillna(-98)
+
     # sort annotated if present
     try:
         final_dataset.loc[annotated, :] = (
@@ -519,6 +523,7 @@ def _sort_dataset(final_dataset):
                     if not pd.api.types.is_string_dtype(col.fillna(""))
                     else col.str.lower()
                 ),
+                na_position="first",
             )
             .values
         )
@@ -529,8 +534,8 @@ def _sort_dataset(final_dataset):
     final_dataset.loc[~annotated, :] = (
         final_dataset.loc[~annotated, :].sort_values(by=["RT", "MZ"]).values
     )
-    if not superclass_present:
-        del final_dataset["superClass"]
+    if not ordernum_present:
+        del final_dataset["orderNum"]
 
     return final_dataset
 
@@ -600,7 +605,7 @@ def harmonize_metadata(data, injectionset, sampleset):
         "mm": "QC-Master_Mix",
         "ms2": "QC-MS2",
         "brpp": "QC-BRPP",
-        "bridge_pref": "QC-Bridge_PREF",
+        "bridge_pref": "QC-Scaling_Pool",
     }
 
     if qcrole in combined.columns:
@@ -793,37 +798,39 @@ def filter_features_mask(data, smdata, fmdata, form_params):
     """
     warnings = []
     to_keep = np.array([True] * len(fmdata))
-    if "Primary" in fmdata.columns:
-        to_keep = to_keep & fmdata["Primary"].fillna(False)
 
     if not fmdata.index.equals(data.index):
         raise IndexError("Your Feature Metadata does not match your data index.")
 
     pref_as = smdata.index[smdata["injection_type"] == "prefa"]
     pref_bs = smdata.index[smdata["injection_type"] == "prefb"]
-    miss_column = f"PREF Missing (of {len(pref_as) + len(pref_bs)})"
-    if form_params["missing_as_percent"]:
-        missing_cutoff = np.ceil(
-            (len(pref_as) + len(pref_bs)) * form_params["missing_cutoff"] / 100
-        )
-    else:
-        missing_cutoff = form_params["missing_cutoff"]
 
-    to_keep = to_keep & (fmdata[miss_column] <= missing_cutoff)
-    if len(pref_as) > 0:
-        to_keep = to_keep & (fmdata["PREFA CVs"] <= form_params["cv_cutoff"] / 100)
-    if len(pref_bs) > 0:
-        to_keep = to_keep & (fmdata["PREFB CVs"] <= form_params["cv_cutoff"] / 100)
+    if form_params["filter_by_pref_missing"]:
+        miss_column = f"PREF Missing (of {len(pref_as) + len(pref_bs)})"
+        if form_params["missing_as_percent"]:
+            missing_cutoff = np.ceil(
+                (len(pref_as) + len(pref_bs)) * form_params["missing_cutoff"] / 100
+            )
+        else:
+            missing_cutoff = form_params["missing_cutoff"]
+        to_keep = to_keep & (fmdata[miss_column] <= missing_cutoff)
 
-    if "Primary" in fmdata.columns:
+    if form_params["filter_by_pref_cv"]:
+        if len(pref_as) > 0:
+            to_keep = to_keep & (fmdata["PREFA CVs"] <= form_params["cv_cutoff"] / 100)
+        if len(pref_bs) > 0:
+            to_keep = to_keep & (fmdata["PREFB CVs"] <= form_params["cv_cutoff"] / 100)
+
+    if form_params["filter_by_clusters"] and "Primary" in fmdata.columns:
         to_keep = to_keep & fmdata["Primary"].fillna(False)
 
     # annotated compounds don't get filtered by CV or missing PREFs
     to_keep = to_keep | pd.notnull(fmdata["Annotation_ID"])
 
     # but everything by non_quant
-    non_quant = fmdata["Non_Quant"].fillna(False).astype(bool)
-    to_keep = to_keep & ~non_quant
+    if form_params["filter_by_nonquant"]:
+        non_quant = fmdata["Non_Quant"].fillna(False).astype(bool)
+        to_keep = to_keep & ~non_quant
 
     # find all duplicated annotations that weren't filtered as non_quant
     annotated = to_keep & pd.notnull(fmdata["Annotation_ID"])
@@ -858,17 +865,23 @@ def filter_features_mask(data, smdata, fmdata, form_params):
                         break
 
     # find annotations that are still duplicated
-    annotated = to_keep & pd.notnull(fmdata["Annotation_ID"])
-    is_duplicated = fmdata.loc[annotated, "Annotation_ID"].duplicated(keep=False)
-    duplicates = fmdata.loc[is_duplicated.index[is_duplicated]]
+    if form_params["filter_by_extraction_method"]:
+        annotated = to_keep & pd.notnull(fmdata["Annotation_ID"])
+        is_duplicated = fmdata.loc[annotated, "Annotation_ID"].duplicated(keep=False)
+        duplicates = fmdata.loc[is_duplicated.index[is_duplicated]]
 
-    for anno in set(duplicates["Annotation_ID"]):
-        group = duplicates.loc[duplicates["Annotation_ID"] == anno]
-        # drop QI annotation(s) if there is a TF annotation
-        if form_params["feature_priority"][0] in group["__extraction_method"].values:
-            to_drop = group["__extraction_method"] == form_params["feature_priority"][1]
-            to_drop_idx = to_drop.index[to_drop]
-            to_keep[to_drop_idx] = False
+        for anno in set(duplicates["Annotation_ID"]):
+            group = duplicates.loc[duplicates["Annotation_ID"] == anno]
+            # drop QI annotation(s) if there is a TF annotation
+            if (
+                form_params["feature_priority"][0]
+                in group["__extraction_method"].values
+            ):
+                to_drop = (
+                    group["__extraction_method"] == form_params["feature_priority"][1]
+                )
+                to_drop_idx = to_drop.index[to_drop]
+                to_keep[to_drop_idx] = False
 
     # finally, if there are still duplicates, warn the user
     annotated = to_keep & pd.notnull(fmdata["Annotation_ID"])
