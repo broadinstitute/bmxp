@@ -20,7 +20,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.15"
+__version__ = "0.3.0"
 
 
 def parse_formatted(dataset):
@@ -492,8 +492,8 @@ def report_from_formatted(
 def _sort_dataset(final_dataset):
     """Sort annotated metabolites by order, then, class MZ, RT;
     sort nontargeted by RT, MZ"""
-    # make sure all annotated features are above nontargeted features
-    final_dataset = final_dataset.sort_values(by=["Metabolite"])
+    # sort annotated features to top, then sort nontargeted by RT, MZ
+    final_dataset = final_dataset.sort_values(by=["Metabolite", "RT", "MZ"])
     annotated = ~pd.isnull(final_dataset["Metabolite"])
 
     # force internal standards sort to top, missing orderNum next
@@ -530,10 +530,6 @@ def _sort_dataset(final_dataset):
     except KeyError:
         pass
 
-    # sort nontargeted separately
-    final_dataset.loc[~annotated, :] = (
-        final_dataset.loc[~annotated, :].sort_values(by=["RT", "MZ"]).values
-    )
     if not ordernum_present:
         del final_dataset["orderNum"]
 
@@ -541,9 +537,10 @@ def _sort_dataset(final_dataset):
 
 
 def harmonize_metadata(data, injectionset, sampleset):
-    """Generates combined Sampleset and Injectionset metadata with columns matching
-    data. Also removes not_used. If there are samples in data not present in either
-    sampleset or injectionset, they are preserved and missing metadata is null.
+    """
+    Generates combined Sampleset and Injectionset metadata with columns matching data.
+    If there are samples in data not present in either sampleset or injectionset, they
+    are preserved and missing metadata is null.
     """
     warnings = []
     # rename column for older datasets
@@ -923,14 +920,29 @@ def feature_qc(data, smdata, fmdata):
     return fmdata, miss_column
 
 
-def combine(data, smdata, fmdata, fmdata_formats):
-    """Returns a formatted dataset and any warnings"""
-    warnings = []
-    abundance_threshold = 1
-    fmdata = fmdata.copy()
-    smdata = smdata.copy()
+def prepare_sample_metadata(data, smdata):
+    """
+    Transposes sample metadata, aligns it with dataset columns, and creates column
+    header DataFrame with program_ids
+    """
+    smdata = smdata.copy().T
+    headers = data.columns.to_frame().T
+    headers.loc[0, smdata.columns] = smdata.loc["program_id"]
+    smdata = smdata.drop(index="program_id")
+    smdata["Metabolite"] = smdata.index.str.capitalize()
+    smdata = smdata.reindex(columns=data.columns, fill_value="")
+    return smdata, headers
 
-    # check mdata and data have same index
+
+def combine_feature_metadata(data, fmdata, fmdata_formats, abundance_threshold=1):
+    """
+    Combines feature metadata and abundances into a single DataFrame, rounds data, and
+    sorts features
+    """
+    warnings = []
+    fmdata = fmdata.copy()
+
+    # check fmdata and data have same index
     dataset_index = data.index
     if set(fmdata.index) != set(data.index):
         warnings.append(
@@ -944,46 +956,36 @@ def combine(data, smdata, fmdata, fmdata_formats):
     # sort and drop index (which was Compound_ID); Compound_ID should be in feature metadata
     fmdata = fmdata.loc[dataset_index, :].reset_index(drop=True)
     data.reset_index(drop=True, inplace=True)
-    data[data < abundance_threshold] = np.nan
-
     # fill non_quants and cast as object
     if "Non_Quant" not in fmdata.columns:
         fmdata["Non_Quant"] = False
     fmdata.fillna({"Non_Quant": False}, inplace=True)
     fmdata["Non_Quant"] = fmdata["Non_Quant"].astype("object")
-
-    # fill values less than 1 with 1 and round
-    data = data.clip(lower=1).fillna(0)
-    data = data.round(0).astype(np.int64)
-    data = data.replace(0, np.nan)
-
+    # remove values below abundance_threshold and round
+    data[data < abundance_threshold] = np.nan
+    data = data.round(0)
+    data.replace(0, np.nan, inplace=True)
     # keep additional columns but drop columns that are for internal use only
     additional_cols = [
         col for col in fmdata if col not in fmdata_formats and not col.startswith("__")
     ]
     fmdata = fmdata.reindex(columns=additional_cols + list(fmdata_formats))
+    combined_dataset = pd.concat([fmdata, data], axis="columns", copy=False)
+    combined_dataset = _sort_dataset(combined_dataset)
+    combined_dataset = combined_dataset.reset_index(drop=True).reset_index()
 
-    final_dataset = pd.concat([fmdata, data], axis="columns")
-    final_dataset = _sort_dataset(final_dataset)
-
-    # set headers as top row
-    injection_meta = smdata.T
-    final_dataset = final_dataset.reset_index(drop=True).reset_index()
-    final_dataset = final_dataset.astype("object")
-    final_dataset.loc[-1, final_dataset.columns] = final_dataset.columns
-    final_dataset.loc[-1, injection_meta.columns] = injection_meta.loc["program_id"]
-    final_dataset = final_dataset.sort_index()
-    final_dataset = final_dataset.rename(index={-1: "Metabolite"})
-    injection_meta = injection_meta.drop(index="program_id")
-    injection_meta.loc[:, "Metabolite"] = injection_meta.index.str.capitalize()
-    original_columns = final_dataset.columns
-    final_dataset = pd.concat([injection_meta, final_dataset], axis="index")
-    final_dataset = final_dataset.loc[:, original_columns]
-    final_dataset = final_dataset.fillna("")
-    return final_dataset, warnings
+    return combined_dataset, warnings
 
 
-def to_excel(data, fmdata_formats, sdmata_formats, miss_column, method_name="Default"):
+def to_excel(
+    data,
+    smdata,
+    headers,
+    fmdata_formats,
+    sdmata_formats,
+    miss_column,
+    method_name="Default",
+):
     """
     Returns a BytesIO object of a formatted excel sheet
     """
@@ -991,6 +993,12 @@ def to_excel(data, fmdata_formats, sdmata_formats, miss_column, method_name="Def
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output)
     worksheet = workbook.add_worksheet(method_name)
+    worksheet.add_write_handler(
+        float,
+        lambda worksheet, row, col, val, fmt=None: (
+            None if not pd.isnull(val) else worksheet.write_blank(row, col, None, fmt)
+        ),
+    )
     formats = {
         "date": workbook.add_format(
             {
@@ -1098,28 +1106,33 @@ def to_excel(data, fmdata_formats, sdmata_formats, miss_column, method_name="Def
         150,
     )
 
-    for i, row in enumerate(data.values):
-        index_label = data.index[i]
-        if index_label in row_formats.keys():  # injection metadata
-            worksheet.set_row_pixels(i, 16, row_formats[index_label])
-        else:  # default to int
-            worksheet.set_row_pixels(i, 16, formats["int"])
-
+    for i, row in enumerate(smdata.values):
+        index_label = smdata.index[i]
+        worksheet.set_row_pixels(i, 16, row_formats[index_label])
         for j, val in enumerate(row):
-            column_label = data.columns[j]
-            # metadata headers
-            if index_label == "Metabolite" and column_label in column_formats.keys():
-                worksheet.write(i, j, val, formats["header"])
-            # data headers
-            elif index_label == "Metabolite":
-                worksheet.write(i, j, val, formats["header_center"])
-            # row labels
-            elif index_label in row_formats.keys() and column_label == "Metabolite":
+            if data.columns[j] == "Metabolite":  # row labels
                 worksheet.write(i, j, val, formats["label"])
-            # feature metadata
-            elif column_label in column_formats.keys():
-                worksheet.write(i, j, val, column_formats[column_label])
             else:
                 worksheet.write(i, j, val)
+
+    row_offset = len(smdata)
+    worksheet.set_row_pixels(row_offset, 16, formats["int"])
+    for j, val in enumerate(headers.values[0]):
+        if data.columns[j] in column_formats.keys():  # metadata headers
+            worksheet.write(row_offset, j, val, formats["header"])
+        else:  # data headers
+            worksheet.write(row_offset, j, val, formats["header_center"])
+
+    row_offset += 1
+    for i, row in enumerate(data.values):
+        index_label = data.index[i]
+        worksheet.set_row_pixels(i + row_offset, 16, formats["int"])
+        for j, val in enumerate(row):
+            column_label = data.columns[j]
+            if column_label in column_formats.keys():  # feature metadata
+                worksheet.write(i + row_offset, j, val, column_formats[column_label])
+            else:
+                worksheet.write(i + row_offset, j, val)
+
     workbook.close()
     return output
