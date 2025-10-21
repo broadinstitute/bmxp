@@ -1,4 +1,3 @@
-from .formation_plots import *
 import logging
 import re
 import io
@@ -13,6 +12,7 @@ import matplotlib.dates as mdates
 import xlsxwriter
 from bmxp.gravity import spearman, pearson
 from bmxp import FMDATA, IMDATA
+from .formation_plots import *
 
 matplotlib.use("agg")
 
@@ -20,7 +20,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 
 def parse_formatted(dataset):
@@ -97,6 +97,7 @@ def report(
     sample_names=None,
     out_filepath=None,
     write_pdf=True,
+    warnings=None,
 ):
     """
     Handles /formation endpoint
@@ -124,9 +125,9 @@ def report(
         "HMDB_ID": "",
         "Metabolite": "",
     }
-    for fill_key in fill_values:
-        if fill_key not in fmdata.columns:
-            fmdata[fill_key] = fill_values[fill_key]
+    for key, value in fill_values.items():
+        if key not in fmdata.columns:
+            fmdata[key] = value
 
     fmdata.columns.name = None
 
@@ -140,9 +141,9 @@ def report(
         "injection_order": list(range(len(smdata))),
         "column_number": 1,
     }
-    for fill_key in fill_values:
+    for fill_key, value in fill_values.items():
         if fill_key not in smdata.columns:
-            smdata[fill_key] = fill_values[fill_key]
+            smdata[fill_key] = value
 
     # fill necessary missing values
     for sample_type in ("injection_type", "sample_type"):
@@ -206,15 +207,17 @@ def report(
         plt.axis("off")
         plt.text(
             0.5,
-            1,
+            0.9,
             f"QC Report for {dataset_name}",
             ha="center",
             va="top",
             fontsize=24,
+            wrap=True,
+            in_layout=False,
         )
         plt.text(
             0.5,
-            0.9,
+            0.8,
             f"Number of samples: {len(sample_data.columns)}",
             ha="center",
             va="top",
@@ -222,7 +225,7 @@ def report(
         )
         plt.text(
             0.5,
-            0.8,
+            0.7,
             f"Number of features: {len(fmdata.index)}",
             ha="center",
             va="top",
@@ -235,12 +238,30 @@ def report(
                 date = "Unknown"
             plt.text(
                 0.5,
-                0.70,
+                0.6,
                 ("Date of first injection: " + date),
                 ha="center",
                 va="top",
                 fontsize=18,
             )
+        if warnings:
+            plt.text(
+                0,
+                0,
+                "Warnings:\n"
+                + "\n\n".join(
+                    [
+                        warning[:300] + "..." if len(warning) > 300 else warning
+                        for warning in warnings
+                    ]
+                ),
+                ha="left",
+                va="bottom",
+                fontsize=16,
+                wrap=True,
+                in_layout=False,
+            )
+        plt.tight_layout()
         pdf.savefig()
         plt.close("all")
         # create zoomable PCA plot
@@ -888,7 +909,7 @@ def filter_features_mask(data, smdata, fmdata, form_params):
     is_duplicated = fmdata.loc[annotated].duplicated(subset=cols_to_check, keep=False)
     if sum(is_duplicated) > 0:
         warnings.append(
-            "There are duplicate annotations that could not be filtered by adduct "
+            "There are duplicate annotations that were not filtered by adduct "
             + "or extraction method. Please remove duplicate annotations before "
             + "sharing results."
         )
@@ -947,7 +968,7 @@ def combine_feature_metadata(data, fmdata, fmdata_formats, abundance_threshold=1
     if set(fmdata.index) != set(data.index):
         warnings.append(
             "Your metadata and data have mismatched features, likely because this"
-            " is an old dataset. You might have missing features..."
+            " is an old dataset. You might have missing features."
         )
         dataset_index = fmdata.index.intersection(data.index).copy()
         data = data.loc[dataset_index, :]
