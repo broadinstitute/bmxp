@@ -20,7 +20,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 
 def parse_formatted(dataset):
@@ -511,17 +511,26 @@ def report_from_formatted(
 
 
 def _sort_dataset(final_dataset):
-    """Sort annotated metabolites by order, then, class MZ, RT;
-    sort nontargeted by RT, MZ"""
-    # sort annotated features to top, then sort nontargeted by RT, MZ
-    final_dataset = final_dataset.sort_values(by=["Metabolite", "RT", "MZ"])
-    annotated = ~pd.isnull(final_dataset["Metabolite"])
+    """
+    Sort annotated metabolites by order, then class, MZ, RT; sort nontargeted by RT, MZ
 
-    # force internal standards sort to top, missing orderNum next
+    "orderNum" overrides all sorting rules except internal standard sorting; to skip
+    internal standard sorting exclude "HMDB_ID" column or don't label internal standards
+    """
     ordernum_present = "orderNum" in final_dataset
-    final_dataset.loc[
-        final_dataset["HMDB_ID"].str.lower() == "internal standard", "orderNum"
-    ] = -99
+    if not ordernum_present:
+        final_dataset["orderNum"] = np.nan
+    # sort ordered or annotated features to top, then sort nontargeted by RT, MZ
+    final_dataset = final_dataset.sort_values(by=["orderNum", "Metabolite", "RT", "MZ"])
+    annotated = ~pd.isnull(final_dataset["Metabolite"]) | ~pd.isnull(
+        final_dataset["orderNum"]
+    )
+
+    # force internal standards to top, missing orderNum next
+    if "HMDB_ID" in final_dataset:
+        final_dataset.loc[
+            final_dataset["HMDB_ID"].str.lower() == "internal standard", "orderNum"
+        ] = -99
     final_dataset.loc[annotated, "orderNum"] = final_dataset.loc[
         annotated, "orderNum"
     ].fillna(-98)
@@ -670,7 +679,6 @@ def harmonize_metadata(data, injectionset, sampleset):
 
 def fill_f_mdata(metadata, annotations):
     """combine feature metadata from dataset and database queries for final results"""
-    # request annotations and their HMBD IDs
     main_cols = ["__annotation_id", "Compound_ID", "MZ", "RT"]
     additional_meta = [col for col in metadata.columns if col not in main_cols]
     feature_meta = metadata.loc[:, main_cols + additional_meta]
@@ -695,9 +703,6 @@ def fill_f_mdata(metadata, annotations):
         to_fill = feature_meta["__annotation_id"] == key
         for anno_key in value:
             feature_meta.loc[to_fill, anno_key] = value[anno_key]
-
-    # format labels for each column; None = default formatting
-    # feature_meta = feature_meta.reset_index(drop=True)
     return feature_meta
 
 
