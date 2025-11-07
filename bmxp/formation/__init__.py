@@ -20,7 +20,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 
 def parse_formatted(dataset):
@@ -815,22 +815,25 @@ def filter_samples_mask(data, smdata, formation_params):
     return to_keep, warnings
 
 
-def filter_features_mask(data, smdata, fmdata, form_params):
+def filter_features_mask(data, imdata, fmdata, form_params):
     """
     Generates a filtering boolean key for data
     """
     warnings = []
     to_keep = np.array([True] * len(fmdata))
+    ann_id_col = FMDATA["Annotation_ID"]
+    adduct_col = FMDATA["Adduct"]
+    inj_type_col = IMDATA["injection_type"]
 
     if not fmdata.index.equals(data.index):
         raise IndexError("Your Feature Metadata does not match your data index.")
 
-    pref_as = smdata.index[smdata["injection_type"] == "prefa"]
-    pref_bs = smdata.index[smdata["injection_type"] == "prefb"]
+    pref_as = imdata.index[imdata[inj_type_col].str.startswith("prefa", na=False)]
+    pref_bs = imdata.index[imdata[inj_type_col].str.startswith("prefb", na=False)]
 
-    if form_params["filter_by_pref_missing"]:
+    if form_params.get("filter_by_pref_missing", False):
         miss_column = f"PREF Missing (of {len(pref_as) + len(pref_bs)})"
-        if form_params["missing_as_percent"]:
+        if form_params.get("missing_as_percent", False):
             missing_cutoff = np.ceil(
                 (len(pref_as) + len(pref_bs)) * form_params["missing_cutoff"] / 100
             )
@@ -838,29 +841,30 @@ def filter_features_mask(data, smdata, fmdata, form_params):
             missing_cutoff = form_params["missing_cutoff"]
         to_keep = to_keep & (fmdata[miss_column] <= missing_cutoff)
 
-    if form_params["filter_by_pref_cv"]:
+    if form_params.get("filter_by_pref_cv", False):
         if len(pref_as) > 0:
             to_keep = to_keep & (fmdata["PREFA CVs"] <= form_params["cv_cutoff"] / 100)
         if len(pref_bs) > 0:
             to_keep = to_keep & (fmdata["PREFB CVs"] <= form_params["cv_cutoff"] / 100)
 
-    if form_params["filter_by_clusters"] and "Primary" in fmdata.columns:
+    if form_params.get("filter_by_clusters", False) and "Primary" in fmdata.columns:
         to_keep = to_keep & fmdata["Primary"].fillna(False)
 
     # annotated compounds don't get filtered by CV or missing PREFs
-    to_keep = to_keep | pd.notnull(fmdata["Annotation_ID"])
+    to_keep = to_keep | pd.notnull(fmdata[ann_id_col])
 
     # but everything by non_quant
-    if form_params["filter_by_nonquant"]:
-        non_quant = fmdata["Non_Quant"].fillna(False).astype(bool)
+    if form_params.get("filter_by_nonquant", False):
+        non_quant = fmdata[FMDATA["Non_Quant"]].fillna(False).astype(bool)
         to_keep = to_keep & ~non_quant
 
     # find all duplicated annotations that weren't filtered as non_quant
-    annotated = to_keep & pd.notnull(fmdata["Annotation_ID"])
-    is_duplicated = fmdata.loc[annotated, "Annotation_ID"].duplicated(keep=False)
+    annotated = to_keep & pd.notnull(fmdata[ann_id_col])
+    is_duplicated = fmdata.loc[annotated, ann_id_col].duplicated(keep=False)
     duplicates = fmdata.loc[is_duplicated.index[is_duplicated]]
-    if "Adduct" in fmdata.columns and not form_params["keep_adducts"] == "all":
-        if form_params["keep_adducts"] == "top":
+    keep_adducts = form_params.get("keep_adducts", "all")
+    if adduct_col in fmdata.columns and keep_adducts != "all":
+        if keep_adducts == "top":
             # only keep annotation if top priority adduct
             fmdata_adduct_priority_null_vals = (
                 fmdata["Adduct_Priority"].fillna(False).astype(bool)
@@ -869,32 +873,32 @@ def filter_features_mask(data, smdata, fmdata, form_params):
             fmdata_top_adduct = fmdata_adduct_priority_defined["Adduct_Priority"].map(
                 lambda x: x.split(",")[0]
             )
-            to_drop = fmdata_adduct_priority_defined["Adduct"] != fmdata_top_adduct
+            to_drop = fmdata_adduct_priority_defined[adduct_col] != fmdata_top_adduct
             to_drop_idx = to_drop.index[to_drop]
             to_keep[to_drop_idx] = False
         else:
-            for anno in set(duplicates["Annotation_ID"]):
-                group = duplicates.loc[duplicates["Annotation_ID"] == anno]
+            for anno in set(duplicates[ann_id_col]):
+                group = duplicates.loc[duplicates[ann_id_col] == anno]
                 # pick highest priority adduct, if possible
                 priorities = group.loc[group.index[0], "Adduct_Priority"]
                 if not priorities:
                     continue
                 priorities = priorities.split(",")
                 for adduct in priorities:
-                    if adduct in group["Adduct"].values:
-                        to_drop = group["Adduct"] != adduct
+                    if adduct in group[adduct_col].values:
+                        to_drop = group[adduct_col] != adduct
                         to_drop_idx = to_drop.index[to_drop]
                         to_keep[to_drop_idx] = False
                         break
 
     # find annotations that are still duplicated
-    if form_params["filter_by_extraction_method"]:
-        annotated = to_keep & pd.notnull(fmdata["Annotation_ID"])
-        is_duplicated = fmdata.loc[annotated, "Annotation_ID"].duplicated(keep=False)
+    if form_params.get("filter_by_extraction_method", False):
+        annotated = to_keep & pd.notnull(fmdata[ann_id_col])
+        is_duplicated = fmdata.loc[annotated, ann_id_col].duplicated(keep=False)
         duplicates = fmdata.loc[is_duplicated.index[is_duplicated]]
 
-        for anno in set(duplicates["Annotation_ID"]):
-            group = duplicates.loc[duplicates["Annotation_ID"] == anno]
+        for anno in set(duplicates[ann_id_col]):
+            group = duplicates.loc[duplicates[ann_id_col] == anno]
             # drop QI annotation(s) if there is a TF annotation
             if (
                 form_params["feature_priority"][0]
@@ -907,10 +911,10 @@ def filter_features_mask(data, smdata, fmdata, form_params):
                 to_keep[to_drop_idx] = False
 
     # finally, if there are still duplicates, warn the user
-    annotated = to_keep & pd.notnull(fmdata["Annotation_ID"])
-    cols_to_check = ["Annotation_ID"]
-    if "Adduct" in fmdata.columns and form_params["keep_adducts"] == "all":
-        cols_to_check.append("Adduct")
+    annotated = to_keep & pd.notnull(fmdata[ann_id_col])
+    cols_to_check = [ann_id_col]
+    if adduct_col in fmdata.columns and keep_adducts == "all":
+        cols_to_check.append(adduct_col)
     is_duplicated = fmdata.loc[annotated].duplicated(subset=cols_to_check, keep=False)
     if sum(is_duplicated) > 0:
         warnings.append(
@@ -922,12 +926,13 @@ def filter_features_mask(data, smdata, fmdata, form_params):
     return to_keep.values, warnings
 
 
-def feature_qc(data, smdata, fmdata):
+def feature_qc(data, imdata, fmdata):
     """
     Generates QC data and adds to feature metadata
     """
-    pref_as = smdata.index[smdata["injection_type"] == "prefa"]
-    pref_bs = smdata.index[smdata["injection_type"] == "prefb"]
+    inj_type_col = IMDATA["injection_type"]
+    pref_as = imdata.index[imdata[inj_type_col].str.startswith("prefa", na=False)]
+    pref_bs = imdata.index[imdata[inj_type_col].str.startswith("prefb", na=False)]
     miss_column = f"PREF Missing (of {len(pref_as) + len(pref_bs)})"
 
     if len(pref_as) > 0:
@@ -1008,7 +1013,7 @@ def to_excel(
     smdata,
     headers,
     fmdata_formats,
-    sdmata_formats,
+    smdata_formats,
     miss_column,
     method_name="Default",
 ):
@@ -1073,7 +1078,7 @@ def to_excel(
     column_formats = {
         header: formats[label] for header, label in fmdata_formats.items()
     }
-    row_formats = {index: formats[label] for index, label in sdmata_formats.items()}
+    row_formats = {index: formats[label] for index, label in smdata_formats.items()}
 
     # column widths
     worksheet.set_column_pixels(
