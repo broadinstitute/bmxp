@@ -20,7 +20,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 
 def parse_formatted(dataset):
@@ -997,10 +997,11 @@ def combine_feature_metadata(data, fmdata, fmdata_formats, abundance_threshold=1
     data = data.round(0)
     data.replace(0, np.nan, inplace=True)
     # keep additional columns but drop columns that are for internal use only
+    fmdata_cols = [col for col in fmdata_formats if col in fmdata.columns]
     additional_cols = [
-        col for col in fmdata if col not in fmdata_formats and not col.startswith("__")
+        col for col in fmdata if col not in fmdata_cols and not col.startswith("__")
     ]
-    fmdata = fmdata.reindex(columns=additional_cols + list(fmdata_formats))
+    fmdata = fmdata.reindex(columns=additional_cols + fmdata_cols)
     combined_dataset = pd.concat([fmdata, data], axis="columns", copy=False)
     combined_dataset = _sort_dataset(combined_dataset)
     combined_dataset = combined_dataset.reset_index(drop=True).reset_index()
@@ -1014,8 +1015,10 @@ def to_excel(
     headers,
     fmdata_formats,
     smdata_formats,
-    miss_column,
+    column_widths=None,
     method_name="Default",
+    smformat_default="center",
+    fmformat_default="header_center",
 ):
     """
     Returns a BytesIO object of a formatted excel sheet
@@ -1079,6 +1082,8 @@ def to_excel(
         header: formats[label] for header, label in fmdata_formats.items()
     }
     row_formats = {index: formats[label] for index, label in smdata_formats.items()}
+    smformat_default = formats[smformat_default]
+    fmformat_default = formats[fmformat_default]
 
     # column widths
     worksheet.set_column_pixels(
@@ -1099,11 +1104,6 @@ def to_excel(
     worksheet.set_column_pixels(
         data.columns.get_loc("subClass"),
         data.columns.get_loc("subClass"),
-        80,
-    )
-    worksheet.set_column_pixels(
-        data.columns.get_loc(miss_column),
-        data.columns.get_loc(miss_column),
         80,
     )
     worksheet.set_column_pixels(
@@ -1136,23 +1136,37 @@ def to_excel(
         len(data.columns) - 1,
         150,
     )
+    if column_widths is not None:
+        for col_name, width in column_widths.items():
+            if col_name in data.columns:
+                worksheet.set_column_pixels(
+                    data.columns.get_loc(col_name),
+                    data.columns.get_loc(col_name),
+                    width,
+                )
 
     for i, row in enumerate(smdata.values):
         index_label = smdata.index[i]
-        worksheet.set_row_pixels(i, 16, row_formats[index_label])
+        if index_label in row_formats:
+            worksheet.set_row_pixels(i, 16, row_formats[index_label])
+        else:
+            worksheet.set_row_pixels(i, 16, smformat_default)
         for j, val in enumerate(row):
             if data.columns[j] == "Metabolite":  # row labels
                 worksheet.write(i, j, val, formats["label"])
+            elif pd.isnull(val):
+                # replace with a write handler for dates if we add more handlers later
+                worksheet.write_blank(i, j, None)
             else:
                 worksheet.write(i, j, val)
 
     row_offset = len(smdata)
     worksheet.set_row_pixels(row_offset, 16, formats["int"])
     for j, val in enumerate(headers.values[0]):
-        if data.columns[j] in column_formats.keys():  # metadata headers
+        if data.columns[j] in column_formats:  # metadata headers
             worksheet.write(row_offset, j, val, formats["header"])
         else:  # data headers
-            worksheet.write(row_offset, j, val, formats["header_center"])
+            worksheet.write(row_offset, j, val, fmformat_default)
 
     row_offset += 1
     for i, row in enumerate(data.values):
@@ -1160,7 +1174,7 @@ def to_excel(
         worksheet.set_row_pixels(i + row_offset, 16, formats["int"])
         for j, val in enumerate(row):
             column_label = data.columns[j]
-            if column_label in column_formats.keys():  # feature metadata
+            if column_label in column_formats:  # feature metadata
                 worksheet.write(i + row_offset, j, val, column_formats[column_label])
             else:
                 worksheet.write(i + row_offset, j, val)
