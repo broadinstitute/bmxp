@@ -28,7 +28,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.2.7"
+__version__ = "0.2.8"
 
 
 def dataset_loops(attr=None):
@@ -131,7 +131,19 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         *args: Union[str, pd.DataFrame],
         names: Optional[List[str]] = None,
         schema_labels: Optional[dict[str, str]] = None,
+        graph_backend="networkx",
     ):
+        if graph_backend == "kbbqgraph":
+            global kbbqgraph
+            try:
+                import kbbqgraph  # this now binds to the global module
+            except ImportError as e:
+                raise ImportError(
+                    "You must have optional dependency 'kbbqgraph' installed "
+                    "to use it. Otherwise, set graph_backend='networkx'."
+                ) from e
+
+        self.graph_backend = graph_backend
         fmdata = FMDATA.copy()
 
         self.mz_col = (schema_labels or {}).get(
@@ -179,7 +191,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         self.scaler_params = {}
         self.multipliers = {}
         self.prescalers = {}
-        self.graph = nx.DiGraph()
+        self.graph = None
         self.remove_all = True
         # convert names to a list if not supplied
         if names is None:
@@ -856,15 +868,34 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         if c_size_or_loss <= 0:
             c_size_or_loss = len(self.datasets) + c_size_or_loss
 
-        # compressed = self.compress_graph(self.graph)
         df_indices = {ds: [] for ds in self.datasets}
         results = []
-        for dsg in nx.weakly_connected_components(self.graph):
+
+        if self.graph_backend == "kbbqgraph":
+            conn_comp = self.graph.weakly_connected_components()
+            partite_names = list(self.datasets.keys())
+            node_names = {k: list(v.index) for k, v in self.datasets.items()}
+        else:
+            conn_comp = nx.weakly_connected_components(self.graph)
+
+        for dsg in conn_comp:
             # skip graphs smaller than size
             if len(dsg) < g_size_or_loss:
                 continue
-            compressed = self.compress_graph(self.graph.subgraph(dsg))
-            for sg in nx.connected_components(compressed):
+
+            if self.graph_backend == "kbbqgraph":
+                # use fast compressions function
+                # then convert to networkx for remainder
+                compressed = self.graph.subgraph(dsg)
+                compressed.compress()
+                compressed = compressed.to_networkx(
+                    partite_names, node_names, weight_name="score"
+                )
+            else:
+                compressed = self.compress_graph(self.graph.subgraph(dsg))
+
+            compr_conn_comp = nx.connected_components(compressed)
+            for sg in compr_conn_comp:
                 sg = compressed.subgraph(sg).copy()
                 sg_results = []
                 if remove_rerank:
@@ -897,7 +928,6 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                         ds_filtered.append(g)
 
                 results.extend(ds_filtered)
-
         # parse results
         for row in results:
             # add an empty row fore everything, then fill in with features
@@ -1143,25 +1173,65 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         """
         Generates the network graph to be used for feature selection
         """
-        nodes = [f"{ds1}__{str(i)}" for i in self.datasets[ds1].index]
-        self.graph.add_nodes_from(nodes)
-        matches = self.matches[ds1][ds2]
-        scores = self.scores[ds1][ds2]
-        edges = []
-        for col in matches:
-            this_match = matches[col][~pd.isnull(matches[col])]
-            edge_scores = scores[col][~pd.isnull(matches[col])].values
-            sources = this_match.index
-            sources = [ds1 + "__" + str(name) for name in sources]
-            targets = this_match.values
-            targets = [ds2 + "__" + str(name) for name in targets]
-            edges.extend(
-                [
-                    tuple([s, t, {"rank": col, "score": score}])
-                    for s, t, score in zip(sources, targets, edge_scores)
+        if self.graph_backend == "kbbqgraph":
+            # preallocate and add all nodes
+            if self.graph is None:
+                partites = {
+                    i: list(range(len(df)))
+                    for i, df in enumerate(self.datasets.values())
+                }
+                total_nodes = sum(len(nodes) for nodes in partites.values())
+                # pylint: disable-next=undefined-variable
+                self.graph = kbbqgraph.KBBQGraph(pre_allocate=total_nodes)
+                for partite_idx, node_ids in partites.items():
+                    self.graph.add_nodes(partite_idx, node_ids)
+                self.graph.resort()
+                self.graph.reindex()
+
+            ds1_index = tuple(self.datasets.keys()).index(ds1)
+            ds2_index = tuple(self.datasets.keys()).index(ds2)
+            matches = self.matches[ds1][ds2]
+            scores = self.scores[ds1][ds2]
+            for col in matches:
+                this_match = matches[col][~pd.isnull(matches[col])]
+                edge_scores = scores[col][~pd.isnull(matches[col])].values
+                sources = [
+                    [ds1_index, i]
+                    for i in list(
+                        self.datasets[ds1].index.get_indexer(this_match.index)
+                    )
                 ]
-            )
-        self.graph.add_edges_from(edges)
+                targets = [
+                    [ds2_index, i]
+                    for i in list(
+                        self.datasets[ds2].index.get_indexer(this_match.values)
+                    )
+                ]
+                self.graph.add_edges(sources, targets, edge_scores)
+                # only do the first rank
+                break
+        else:
+            if self.graph is None:
+                self.graph = nx.DiGraph()
+            nodes = [f"{ds1}__{str(i)}" for i in self.datasets[ds1].index]
+            self.graph.add_nodes_from(nodes)
+            matches = self.matches[ds1][ds2]
+            scores = self.scores[ds1][ds2]
+            edges = []
+            for col in matches:
+                this_match = matches[col][~pd.isnull(matches[col])]
+                edge_scores = scores[col][~pd.isnull(matches[col])].values
+                sources = this_match.index
+                sources = [ds1 + "__" + str(name) for name in sources]
+                targets = this_match.values
+                targets = [ds2 + "__" + str(name) for name in targets]
+                edges.extend(
+                    [
+                        tuple([s, t, {"rank": col, "score": score}])
+                        for s, t, score in zip(sources, targets, edge_scores)
+                    ]
+                )
+            self.graph.add_edges_from(edges)
 
     def report(
         self,
