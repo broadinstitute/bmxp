@@ -7,7 +7,7 @@ Metabolomics Platform at the Broad Institute. Includes
 * Formation - Formatting and QC of final datasets
 """
 
-__version__ = "0.4.6"
+__version__ = "0.4.8"
 # Feature Metadata
 FMDATA = {
     # provided

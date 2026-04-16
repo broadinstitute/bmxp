@@ -24,7 +24,7 @@ import platform
 from enum import Enum
 import numpy as np
 
-__version__ = "0.0.4"
+__version__ = "0.0.6"
 
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -185,8 +185,10 @@ rawfilereader.Pull_xic.argtypes = [
     c_float,
     c_float,
     c_int32,
-    c_bool,
-    c_bool,
+    c_int32,
+    c_int32,
+    c_int32,
+    c_int32,
 ]
 rawfilereader.Pull_xic.restype = CXic
 
@@ -469,6 +471,8 @@ class RawFile:
         centroid=True,
         pull_mzs=False,
         precursor=None,
+        polarity=-1,
+        ms_level=1,
     ):
         """
         Pulls an XIC
@@ -479,6 +483,12 @@ class RawFile:
         if scan_filter is None:
             scan_filter = -1
 
+        if isinstance(polarity, str):
+            if polarity.lower() in ["pos", "positive", "+", "+1"]:
+                polarity = 1
+            elif polarity.lower() in ["neg", "negative", "-", "-1"]:
+                polarity = 0
+
         if (centroid and not self.centroid) or (not centroid and not self.profile):
             empty = Empty()
             empty.intensity = np.array([])
@@ -487,7 +497,16 @@ class RawFile:
             return empty
         return Xic(
             rawfilereader.Pull_xic(
-                self._data_p, rt1, rt2, mz, ppm, scan_filter, centroid, pull_mzs
+                self._data_p,
+                rt1,
+                rt2,
+                mz,
+                ppm,
+                scan_filter,
+                centroid,
+                pull_mzs,
+                polarity,
+                ms_level,
             )
         )
 

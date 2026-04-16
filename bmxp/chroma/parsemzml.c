@@ -586,16 +586,6 @@ void mzml_createSpectrum(RawFile* rawFile, XmlElement* element, uint64_t* pos) {
       uint32_t arrLength = atoi(arrayLengthStr);
       free(arrayLengthStr);
 
-      // clunkily find the scan number
-      char* idStr = getAttribute(element->attributes, "id");
-      char* start = strstr(idStr, "scan=");
-      uint32_t charPos = 5;
-      for (charPos; charPos < strlen(start); charPos++) {
-        if (start[charPos] == ' ' || start[charPos] == '"' || start[charPos] == '\'') break;
-      }
-      start[charPos] = '\0';
-      uint32_t scanNumber = atoi(&start[5]);
-      free(idStr);
 
       // defaults
       int* numCEs = malloc(sizeof(int));

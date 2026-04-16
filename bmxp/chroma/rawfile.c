@@ -198,9 +198,10 @@ float float_max(float* arr, uint32_t len) {
 }
 
 Xic Pull_xic(RawFile* rawFile, float rt1, float rt2, float mz, float ppm, int32_t filter, int32_t centroid,
-             int pullMzs) {
+             int32_t pullMzs, int32_t polarity, int32_t msLevel) {
   // filter = index of target scan filter, or -1 for no scan filter
   Scan* scans = rawFile->scans;
+  ScanFilter* filters = rawFile->scanFilters;
 
   int32_t start = findFirstGE(scans, rawFile->numScans, rt1);
   int32_t stop = findLastLE(scans, rawFile->numScans, rt2);
@@ -216,7 +217,13 @@ Xic Pull_xic(RawFile* rawFile, float rt1, float rt2, float mz, float ppm, int32_
 
   int32_t pos = 0;
   for (int32_t i = 0; i < length; i++) {
-    if (filter < 0 || (int)scans[start + i].filter == filter) {
+    int32_t filterIdx = scans[start + i].filter;
+    ScanFilter filterInfo = filters[filterIdx];
+
+    if (filter < 0 || filterIdx == filter) {
+      if (msLevel > 0 && filterInfo.msLevel != msLevel) continue;
+      if (polarity >= 0 && filterInfo.polarity != polarity) continue;
+
       rts[pos] = (float)scans[start + i].time;
       // iterate through mzs and add them up
       float mzAvgs = 0;
