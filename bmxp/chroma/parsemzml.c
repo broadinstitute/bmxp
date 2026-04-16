@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <zlib.h>
 
 typedef struct XmlElement {
   int hasClosing;
@@ -12,7 +11,7 @@ typedef struct XmlElement {
   char* attributes;
 } XmlElement;
 
-void getNextElement(XmlElement* element, char* fileArray, int64_t* pos) {
+void getNextElement(XmlElement* element, char* fileArray, uint64_t* pos) {
   // Gets the element and advances the pointer to the closing tag
   free(element->attributes);
   free(element->name);
@@ -275,7 +274,7 @@ void mzml_handleDataProcessing(RawFile* rawFile, XmlElement* element, uint64_t* 
   }
 }
 
-char* getData(char* fileArray, int64_t* pos) {
+char* getData(char* fileArray, uint64_t* pos) {
   // gets data and advances to the last character
   char* data;
   *pos += 1; // go to the actual start
@@ -292,10 +291,12 @@ char* getData(char* fileArray, int64_t* pos) {
 }
 
 float* decodeBinary(char* b64data, char* compression, char* units, uint32_t arrLength) {
+  // Decodes a Base 64 string to a float pointer array
+
   float* values; // final result
   uLongf decLen;
   size_t b64DecLen;
-  unsigned char* b64Dec = NULL;
+  unsigned char* b64Dec = NULL; // decompressed decoded bytes
   unsigned char* decompressed = NULL;
 
   // everything needs to be base64 decoded
@@ -337,9 +338,9 @@ float* decodeBinary(char* b64data, char* compression, char* units, uint32_t arrL
     DoubleResult npResult;
     if (strcmp(compression, "MS:1002312") == 0 || strcmp(compression, "MS:1002746") == 0) // numpress linear
       npResult = decodeLinear(decompressed, decLen);
-    else if (strcmp(compression, "MS:1002313"), 0 || strcmp(compression, "MS:1002747") == 0) // needs positive int
+    else if (strcmp(compression, "MS:1002313") == 0 || strcmp(compression, "MS:1002747") == 0) // needs positive int
       npResult = decodePic(decompressed, decLen);
-    else if (strcmp(compression, "MS:1002314"), 0 || strcmp(compression, "MS:1002748") == 0) // short logged float
+    else if (strcmp(compression, "MS:1002314") == 0 || strcmp(compression, "MS:1002748") == 0) // short logged float
       npResult = decodeSlof(decompressed, decLen);
     values = malloc(npResult.len * 4);
     for (uint32_t i = 0; i < npResult.len; i++) {
@@ -407,7 +408,7 @@ void mzml_handleBinaryData(RawFile* rawFile, uint64_t* pos, XmlElement* element,
   char* units = NULL;
   int numpress = 0;
   char* arrayType = NULL;
-  unsigned char* b64Data;
+  char* b64Data;
   while (!(strcmp(element->name, "binaryDataArray") == 0 && element->isClosing)) {
     getNextElement(element, rawFile->data, pos);
     if (element->isClosing) {
@@ -477,7 +478,7 @@ void mzml_handleChromBinaryData(RawFile* rawFile, uint64_t* pos, XmlElement* ele
   char* units = NULL;
   int numpress = 0;
   char* arrayType = NULL;
-  unsigned char* b64Data = NULL;
+  char* b64Data = NULL;
 
   // as long as it's not the closing tag for 'binaryDataArry'
   while (!(strcmp(element->name, "binaryDataArray") == 0 && element->isClosing)) {
@@ -585,7 +586,6 @@ void mzml_createSpectrum(RawFile* rawFile, XmlElement* element, uint64_t* pos) {
       char* arrayLengthStr = getAttribute(element->attributes, "defaultArrayLength");
       uint32_t arrLength = atoi(arrayLengthStr);
       free(arrayLengthStr);
-
 
       // defaults
       int* numCEs = malloc(sizeof(int));
@@ -738,7 +738,7 @@ int16_t initializeMzml(RawFile* rawFile, int profile, int centroid) {
   element->name = NULL;
   element->attributes = NULL;
 
-  int64_t pos = 0;
+  uint64_t pos = 0;
   while (1) {
     getNextElement(element, rawFile->data, &pos);
     if (strcmp(element->name, "fileDescription") == 0 && (!element->hasClosing))

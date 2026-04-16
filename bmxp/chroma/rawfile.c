@@ -86,18 +86,41 @@ uint8_t compareFilters(ScanFilter* a, ScanFilter* b) {
   }
   return 1;
 }
-uint64_t file_size(char* filename) {
-  // return size;
-  uint64_t filesize = 0; /* or unsigned long for C89 compatability*/
-  unsigned char buffer[1048576];
-  FILE* f = fopen(filename, "rb");
-  while (1) {
-    size_t numRead = fread(buffer, 1, 1048576, f);
-    if (numRead >= 1)
-      filesize += numRead;
-    else
-      break;
+uint64_t file_size(const char* filename) {
+  uint64_t filesize = 0;
+  unsigned char buffer[1024 * 1024];
+
+  if (!filename || filename[0] == '\0') {
+    return 0;
   }
+
+  FILE* f = fopen(filename, "rb");
+  if (!f) {
+    // Optional: log errno somewhere if you want diagnostics.
+    // errno is set by fopen on failure.
+    return 0;
+  }
+
+  for (;;) {
+    size_t n = fread(buffer, 1, sizeof(buffer), f);
+
+    if (n > 0) {
+      filesize += (uint64_t)n;
+    }
+
+    if (n < sizeof(buffer)) {
+      if (feof(f)) {
+        break; // normal EOF
+      }
+      if (ferror(f)) {
+        // read error; could inspect errno, but just bail out robustly
+        break;
+      }
+      // n==0 and not EOF/error is unusual but break to avoid spinning
+      break;
+    }
+  }
+
   fclose(f);
   return filesize;
 }
@@ -247,11 +270,12 @@ Xic Pull_xic(RawFile* rawFile, float rt1, float rt2, float mz, float ppm, int32_
         intensities[pos] += intensityPtrStart[j];
         if (pullMzs) mzAvgs += intensityPtrStart[j] * mzsPtrStart[j];
       }
-      if (pullMzs)
+      if (pullMzs) {
         if (intensities[pos] > 0)
           mzs[pos] = mzAvgs / intensities[pos];
         else
           mzs[pos] = 0;
+      }
       pos++;
     }
   }
@@ -338,6 +362,10 @@ int16_t FreeRawFile(RawFile* rf) {
 
   // rf->data  already freed
   free(rf);
+  return 1;
 }
 
-int16_t FreeP(void* p) { free(p); }
+int16_t FreeP(void* p) {
+  free(p);
+  return 1;
+}

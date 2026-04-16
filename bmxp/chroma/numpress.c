@@ -181,7 +181,7 @@ double optimalLinearFixedPoint(const double* data, size_t dataSize) {
   for (size_t i = 2; i < dataSize; i++) {
     extrapol = data[i - 1] + (data[i - 1] - data[i - 2]);
     diff = data[i] - extrapol;
-    maxDouble = fmax(maxDouble, ceil(abs(diff) + 1));
+    maxDouble = fmax(maxDouble, ceil(fabs(diff) + 1));
   }
 
   return floor(0x7FFFFFFFl / maxDouble);
@@ -248,7 +248,8 @@ CharResult encodeLinear(const double* data, int64_t dataSize, double fixedPoint)
   for (i = 2; i < dataSize; i++) {
     ints[0] = ints[1];
     ints[1] = ints[2];
-    if (THROW_ON_OVERFLOW && data[i] * fixedPoint + 0.5 > LLONG_MAX) {
+    long double x = (long double)data[i] * (long double)fixedPoint + 0.5L;
+    if (THROW_ON_OVERFLOW && x > (long double)LLONG_MAX) {
       printf("[MSNumpress::encodeLinear] Next number overflows LLONG_MAX.");
       result.len = -1;
       return result;
@@ -786,14 +787,14 @@ void tEncodeDecodeLinearStraight() {
   double mLim = 0.000005;
 
   for (size_t i = 0; i < n; i++) {
-    error = abs(mzs[i] - decodedBytes.data[i]);
+    error = fabs(mzs[i] - decodedBytes.data[i]);
     m = fmax(m, error);
     if (error >= mLim) {
       printf("error   %f above limit %f\n", error, mLim);
       assert(error < mLim);
     }
   }
-  printf("+     size compressed: %ld%%\n", encodedBytes.len / (n * 8) * 100);
+  printf("+     size compressed: %.2f%%\n", encodedBytes.len / (n * 8) * 100.);
   printf("+           max error: %f   limit: %f\n", m, mLim);
   printf("+ pass    encodeDecodeLinearStraight \n\n");
   free(encodedBytes.data);
@@ -820,14 +821,14 @@ void tEncodeDecodeLinear() {
   double mLim = 0.000005;
 
   for (size_t i = 0; i < n; i++) {
-    error = abs(mzs[i] - decodedBytes.data[i]);
+    error = fabs(mzs[i] - decodedBytes.data[i]);
     m = fmax(m, error);
     if (error >= mLim) {
       printf("error   %f above limit %f\n", error, mLim);
       assert(error < mLim);
     }
   }
-  printf("+     size compressed: %ld%%\n", encodedBytes.len / (n * 8) * 100);
+  printf("+     size compressed: %.2f%%\n", encodedBytes.len / (n * 8) * 100.0);
   printf("+           max error: %f   limit: %f\n", m, mLim);
   printf("+ pass    encodeDecodeLinear \n\n");
   free(encodedBytes.data);
@@ -976,7 +977,7 @@ void tEncodeDecodeSlof() {
 
   for (size_t i = 0; i < n; i++)
     if (ics[i] < 1.0) {
-      error = abs(ics[i] - decodedBytes.data[i]);
+      error = fabs(ics[i] - decodedBytes.data[i]);
       m = fmax(m, error);
       if (error >= mLim) {
 
@@ -984,7 +985,7 @@ void tEncodeDecodeSlof() {
         assert(error < mLim);
       }
     } else {
-      error = abs((ics[i] - decodedBytes.data[i]) / ((ics[i] + decodedBytes.data[i]) / 2));
+      error = fabs((ics[i] - decodedBytes.data[i]) / ((ics[i] + decodedBytes.data[i]) / 2));
       rm = fmax(rm, error);
       if (error >= rmLim) {
         printf("\n%f %f\n", ics[i], decodedBytes.data[i]);
@@ -1059,7 +1060,7 @@ void testErroneousDecodePic() {
 
   DoubleResult result = decodePic(data, n);
   if (result.len >= 0) {
-    printf("- fail    testErroneousDecodePic: didn't throw exception for corrupt input %ld \n\n", result.len);
+    printf("- fail    testErroneousDecodePic: didn't throw exception for corrupt input %" PRId64 " \n\n", result.len);
     assert(0 == 1);
   }
 

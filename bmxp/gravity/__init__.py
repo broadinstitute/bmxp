@@ -28,16 +28,34 @@ import networkx as nx
 from bmxp.gravity import fallback
 from bmxp import FMDATA
 
+dll_name = "correlation"
 dir_path = os.path.dirname(os.path.realpath(__file__))
-correlation = None
-if platform.system() == "Windows" and os.path.exists(
-    os.path.join(dir_path, "correlation.dll")
-):
-    correlation = CDLL(os.path.join(dir_path, "correlation.dll"))
-elif platform.system() == "Linux" and os.path.exists(
-    os.path.join(dir_path, "correlation.so")
-):
-    correlation = CDLL(os.path.join(dir_path, "correlation.so"))
+system = platform.system()
+machine = platform.machine().lower()
+
+if system == "Windows":
+    dll_name += ".dll"
+elif system == "Linux":
+    if machine in ("x86_64", "amd64"):
+        dll_name += ".linux.x86_64.so"
+    elif machine in ("aarch64", "arm64"):
+        dll_name += ".linux.aarch64.so"
+    else:
+        raise RuntimeError(f"Unsupported Linux architecture: {machine}")
+elif system == "Darwin":
+    if machine in ("x86_64",):
+        dll_name += ".macos.x86_64.dylib"
+    elif machine in ("arm64", "aarch64"):
+        dll_name += ".macos.aarch64.dylib"
+    else:
+        raise RuntimeError(f"Unsupported macOS architecture: {machine}")
+else:
+    raise RuntimeError(f"Unsupported OS: {system}")
+dll_path = os.path.join(dir_path, dll_name)
+if not os.path.exists(dll_path):
+    raise FileNotFoundError(f"Shared library not found: {dll_path}")
+
+correlation = CDLL(dll_path)
 
 c_array = np.ctypeslib.ndpointer(dtype=np.float64, flags="C_CONTIGUOUS")
 int32_array = np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS")
@@ -69,7 +87,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 def free_p(p):

@@ -1,3 +1,4 @@
+#include "miniz.c"
 #include "rawfile.c"
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,7 +43,7 @@ RawFile* Open(char* filename, int profile, int centroid, char* format, uint64_t 
   return rawFile;
 }
 
-int16_t main() {
+int main() {
   char* filename = "D:\\Work\\TFE Tests\\CN Small\\Agilent-6495-QQQ.mzML";
   RawFile* rawFile;
   rawFile = Open(filename, 0, 1, "mzml", 0);
@@ -58,4 +59,5 @@ int16_t main() {
   for (int i = 0; i < results.length; i++) {
     printf("%f ", results.intensity[i]);
   }
+  return 0;
 }

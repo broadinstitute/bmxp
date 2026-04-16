@@ -1,7 +1,7 @@
 include requirements.txt
 include README.md
-include ./bmxp/gravity/correlation.c
-include ./bmxp/gravity/correlation.dll
-include ./bmxp/gravity/correlation.so
-include ./bmxp/chroma/*
-recursive-include ./tests *
+
+recursive-include bmxp/gravity *.c *.h *.dll *.so *.dylib
+recursive-include bmxp/chroma  *.c *.h *.dll *.so *.dylib
+
+recursive-include tests *

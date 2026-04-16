@@ -45,6 +45,7 @@ int comparator(const void* a, const void* b) {
   if (valA < valB) {
     return -1;
   }
+  return 0;
 }
 
 int32_t* nanMask(double* x, double* y, int32_t size) {

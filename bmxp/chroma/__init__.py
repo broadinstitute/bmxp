@@ -24,14 +24,36 @@ import platform
 from enum import Enum
 import numpy as np
 
-__version__ = "0.0.6"
+__version__ = "0.0.7"
 
-
+dll_name = "rawfilereader"
 dir_path = os.path.dirname(os.path.realpath(__file__))
-if platform.system() == "Windows":
-    rawfilereader = CDLL(os.path.join(dir_path, "rawfilereader.dll"))
+system = platform.system()
+machine = platform.machine().lower()
+
+if system == "Windows":
+    dll_name += ".dll"
+elif system == "Linux":
+    if machine in ("x86_64", "amd64"):
+        dll_name += ".linux.x86_64.so"
+    elif machine in ("aarch64", "arm64"):
+        dll_name += ".linux.aarch64.so"
+    else:
+        raise RuntimeError(f"Unsupported Linux architecture: {machine}")
+elif system == "Darwin":
+    if machine in ("x86_64",):
+        dll_name += ".macos.x86_64.dylib"
+    elif machine in ("arm64", "aarch64"):
+        dll_name += ".macos.aarch64.dylib"
+    else:
+        raise RuntimeError(f"Unsupported macOS architecture: {machine}")
 else:
-    rawfilereader = CDLL(os.path.join(dir_path, "rawfilereader.so"))
+    raise RuntimeError(f"Unsupported OS: {system}")
+dll_path = os.path.join(dir_path, dll_name)
+if not os.path.exists(dll_path):
+    raise FileNotFoundError(f"Shared library not found: {dll_path}")
+
+rawfilereader = CDLL(dll_path)
 
 
 class Empty:

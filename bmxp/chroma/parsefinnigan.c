@@ -151,6 +151,7 @@ int16_t fillScanEvents(RawFile* rawFile, FinniganInfo finniganInfo, FinniganScan
   }
 
   rawFile->nFilters = k;
+  return 1;
 }
 
 int16_t fillScanIndices(RawFile* rawFile, FinniganInfo finniganInfo, FinniganScan* finniganScans) {
@@ -163,6 +164,7 @@ int16_t fillScanIndices(RawFile* rawFile, FinniganInfo finniganInfo, FinniganSca
     memcpy(&finniganScans[i].offset, &data[pos + 72], 8);
     pos += 88;
   }
+  return 1;
 }
 
 int16_t readScanDataPacket(RawFile* rawFile, uint64_t index, Scan* scan, int profile, FinniganInfo finniganInfo,
@@ -227,6 +229,7 @@ int16_t readScanDataPacket(RawFile* rawFile, uint64_t index, Scan* scan, int pro
       index += 2;
     }
   }
+  return 1;
 }
 
 int16_t fillScans(RawFile* rawFile, int profile, int centroid, FinniganInfo finniganInfo, FinniganScan* finniganScans) {
@@ -326,6 +329,7 @@ int16_t fillScans(RawFile* rawFile, int profile, int centroid, FinniganInfo finn
     free(finniganScan->chunks);
     free(finniganScan->flags);
   }
+  return 1;
 }
 
 int16_t initializeRawfile(RawFile* rawFile, int profile, int centroid) {
