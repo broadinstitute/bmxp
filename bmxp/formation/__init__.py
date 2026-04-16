@@ -20,7 +20,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 
 
 def parse_formatted(dataset):
@@ -899,13 +899,13 @@ def filter_features_mask(data, imdata, fmdata, form_params):
 
         for anno in set(duplicates[ann_id_col]):
             group = duplicates.loc[duplicates[ann_id_col] == anno]
-            # drop QI annotation(s) if there is a TF annotation
+            # drop nontargeted annotation(s) if there is a targeted annotation
             if (
                 form_params["feature_priority"][0]
                 in group["__extraction_method"].values
             ):
                 to_drop = (
-                    group["__extraction_method"] == form_params["feature_priority"][1]
+                    group["__extraction_method"] != form_params["feature_priority"][0]
                 )
                 to_drop_idx = to_drop.index[to_drop]
                 to_keep[to_drop_idx] = False
