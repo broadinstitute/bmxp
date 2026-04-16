@@ -28,7 +28,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.2.8"
+__version__ = "0.2.9"
 
 
 def dataset_loops(attr=None):
@@ -872,9 +872,13 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         results = []
 
         if self.graph_backend == "kbbqgraph":
+            self.graph.resort()
             conn_comp = self.graph.weakly_connected_components()
             partite_names = list(self.datasets.keys())
-            node_names = {k: list(v.index) for k, v in self.datasets.items()}
+            node_names = {
+                k: list(v.index.astype(int))
+                for (k, v) in enumerate(self.datasets.values())
+            }
         else:
             conn_comp = nx.weakly_connected_components(self.graph)
 
@@ -888,6 +892,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                 # then convert to networkx for remainder
                 compressed = self.graph.subgraph(dsg)
                 compressed.compress()
+                compressed.resort()
                 compressed = compressed.to_networkx(
                     partite_names, node_names, weight_name="score"
                 )
@@ -1176,6 +1181,7 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
         if self.graph_backend == "kbbqgraph":
             # preallocate and add all nodes
             if self.graph is None:
+                # i must be numeric, since index might be a string
                 partites = {
                     i: list(range(len(df)))
                     for i, df in enumerate(self.datasets.values())
@@ -1198,13 +1204,17 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
                 sources = [
                     [ds1_index, i]
                     for i in list(
-                        self.datasets[ds1].index.get_indexer(this_match.index)
+                        self.datasets[ds1]
+                        .index.get_indexer(this_match.index)
+                        .astype(int)
                     )
                 ]
                 targets = [
                     [ds2_index, i]
                     for i in list(
-                        self.datasets[ds2].index.get_indexer(this_match.values)
+                        self.datasets[ds2]
+                        .index.get_indexer(this_match.values)
+                        .astype(int)
                     )
                 ]
                 self.graph.add_edges(sources, targets, edge_scores)
