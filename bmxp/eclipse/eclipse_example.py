@@ -2,7 +2,6 @@
 
 from bmxp.eclipse import MSAligner
 
-
 datasets = [
     "../../tests/test1.csv",
     "../../tests/test2.csv",

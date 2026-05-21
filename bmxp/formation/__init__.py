@@ -20,7 +20,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.3.5"
+__version__ = "0.3.6"
 
 
 def parse_formatted(dataset):
@@ -850,7 +850,15 @@ def filter_features_mask(data, imdata, fmdata, form_params):
     if form_params.get("filter_by_clusters", False) and "Primary" in fmdata.columns:
         to_keep = to_keep & fmdata["Primary"].fillna(False)
 
-    # annotated compounds don't get filtered by CV or missing PREFs
+    for filt in form_params.get("filter_by_other", {}).values():
+        # handle arbitrary filters, "compare" is a pd.Series method that returns a
+        # boolean Series indicating which features to keep
+        if not filt["enabled"] or filt["header"] not in fmdata.columns:
+            continue
+        filter_method = getattr(fmdata[filt["header"]], filt["compare"])
+        to_keep = to_keep & filter_method(filt["value"], **filt.get("kwargs", {}))
+
+    # annotated compounds don't get filtered by any of the above filters
     to_keep = to_keep | pd.notnull(fmdata[ann_id_col])
 
     # but everything by non_quant
