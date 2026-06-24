@@ -25,7 +25,7 @@ import platform
 from enum import Enum
 import numpy as np
 
-__version__ = "0.0.7"
+__version__ = "0.0.8"
 
 dll_name = "rawfilereader"
 dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -245,22 +245,30 @@ class Xic:  # pylint: disable=too-few-public-methods
         rt_p = c_xic.rt
         intensity_p = c_xic.intensity
         mz_p = c_xic.mzs
-        self.length = c_xic.length
-        self.rt = np.copy(
-            np.frombuffer((c_float * c_xic.length).from_address(rt_p), np.float32)
-        )
-        self.intensity = np.copy(
-            np.frombuffer(
-                (c_float * c_xic.length).from_address(intensity_p), np.float32
-            )
-        )
-        if mz_p:
-            self.mz = np.copy(
-                np.frombuffer((c_float * c_xic.length).from_address(mz_p), np.float32)
-            )
-        else:
-            self.mz = np.zeros(self.length, np.float32)
 
+        try:
+            self.length = c_xic.length
+
+            self.rt = np.copy(
+                np.frombuffer((c_float * c_xic.length).from_address(rt_p), np.float32)
+            )
+            self.intensity = np.copy(
+                np.frombuffer(
+                    (c_float * c_xic.length).from_address(intensity_p), np.float32
+                )
+            )
+            if mz_p:
+                self.mz = np.copy(
+                    np.frombuffer(
+                        (c_float * c_xic.length).from_address(mz_p), np.float32
+                    )
+                )
+            else:
+                self.mz = np.zeros(self.length, np.float32)
+        except TypeError:
+            self.rt = np.array([])
+            self.intensity = np.array([])
+            self.mz = np.array([])
         rawfilereader.FreeP(rt_p)
         rawfilereader.FreeP(intensity_p)
         rawfilereader.FreeP(mz_p)
@@ -372,8 +380,10 @@ class RawFile:
             if file_format is None:
                 if file.lower().endswith(".raw"):
                     file_format = "rawfile"
-                else:
+                elif file.lower().endswith(".mzml"):
                     file_format = "mzml"
+                elif file.lower().endswith(".mzxml"):
+                    file_format = "mzxml"
             format_char = file_format.encode("utf-8")
             filename_char = file.encode("utf-8")
             ptr = rawfilereader.Open(
@@ -400,7 +410,7 @@ class RawFile:
             self.instrument_model = "unknown"
         try:
             self.filename = rf.filename.decode("UTF-8")
-        except UnicodeDecodeError:
+        except (UnicodeDecodeError, AttributeError):
             self.filename = ""
         self.profile = profile
         self.centroid = centroid
