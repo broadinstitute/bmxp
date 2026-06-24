@@ -20,7 +20,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.3.6"
+__version__ = "0.3.7"
 
 
 def parse_formatted(dataset):
@@ -305,7 +305,10 @@ def report(
         num_columns = smdata.select_dtypes(include=["float64", "int64"]).columns
         date_columns = smdata.select_dtypes(include=["datetime"]).columns
         str_columns = smdata.select_dtypes(include=["string"]).columns
-        cmap = copy.copy(plt.cm.get_cmap("magma"))
+        try:
+            cmap = matplotlib.colormaps["magma"].copy()
+        except AttributeError:
+            cmap = plt.cm.get_cmap("magma").copy()
         cmap.set_bad(color=nan_color)
         graph_index = 0
         for i, column_name in enumerate(smdata.columns):

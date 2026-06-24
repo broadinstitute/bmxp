@@ -12,7 +12,7 @@ from tqdm import tqdm
 from scipy import interpolate
 from bmxp import FMDATA, IMDATA, POOL_INJ_TYPES
 
-__version__ = "0.2.7"
+__version__ = "0.2.8"
 
 
 class DriftCorrection:  # pylint: disable=too-many-instance-attributes
@@ -568,6 +568,7 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
                 filepath += f"_{method}_{params[0]}"
             else:
                 filepath += f"_{method}"
+        filepath += ".csv"
 
         # sort CV columns so raw columns come first
         headers = [i for i in self.cvs.columns if "CVs" in i]
@@ -596,7 +597,7 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
                 output.to_csv(lineterminator="\r\n", index=False),
                 filepath,
             )
-        return output.to_csv(filepath + ".csv", index=False)
+        return output.to_csv(filepath, index=False)
 
     def report(self, filepath="report.csv", to_string=False):
         """

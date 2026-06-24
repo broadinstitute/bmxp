@@ -27,6 +27,7 @@ RawFile* FromBytes(char* data, int profile, int centroid, char* format) {
   rawFile->data = data;
   if (strcmp(format, "rawfile") == 0) success = initializeRawfile(rawFile, profile, centroid);
   if (strcmp(format, "mzml") == 0) success = initializeMzml(rawFile, profile, centroid);
+  if (strcmp(format, "mzxml") == 0) success = initializeMzxml(rawFile, profile, centroid);
   if (success < 0) {
     free(rawFile);
     return NULL;

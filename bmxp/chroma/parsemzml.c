@@ -382,7 +382,19 @@ void mzml_handleScanCvParams(RawFile* rawFile, uint64_t* pos, XmlElement* elemen
     free(tempStr);
   } else if (strcmp(accession, "MS:1000016") == 0) { // retention time
     char* tempStr = getAttribute(element->attributes, "value");
+    char* tempUnits = getAttribute(element->attributes, "unitAccession");
     scan->time = atof(tempStr);
+    if (tempUnits && strcmp(tempUnits, "UO:0000010") == 0) {
+      scan->time /= 60.0; // seconds -> minutes
+    } else if (tempUnits && strcmp(tempUnits, "UO:0000028") == 0) {
+      scan->time /= 60000.0; // milliseconds -> minutes
+    } else if (tempUnits && strcmp(tempUnits, "UO:0000029") == 0) {
+      scan->time /= 60000000.0; // microseconds -> minutes
+    } else if (tempUnits && strcmp(tempUnits, "UO:0000032") == 0) {
+      scan->time *= 60.0; // hours -> minutes
+    }
+    // NULL or UO:0000031 means assume/keep minutes.
+    free(tempUnits);
     free(tempStr);
   } else if (strcmp(accession, "MS:1000827") == 0) { // isolation window
     scanFilter->nPrecursors = scanFilter->nPrecursors + 1;
@@ -769,3 +781,372 @@ int16_t initializeMzml(RawFile* rawFile, int profile, int centroid) {
 }
 //
 //
+
+// -------------------------
+// Minimal mzXML support
+// -------------------------
+// This intentionally focuses on <scan>, <precursorMz>, and especially <peaks>.
+// mzXML stores m/z-intensity pairs in one interleaved base64 block, usually
+// big-endian/network byte order, optionally zlib-compressed.
+
+static int mzxml_isWhitespace(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+
+static char* mzxml_stripWhitespace(const char* input) {
+  size_t len = strlen(input);
+  char* out = malloc(len + 1);
+  size_t j = 0;
+  for (size_t i = 0; i < len; i++) {
+    if (!mzxml_isWhitespace(input[i])) out[j++] = input[i];
+  }
+  out[j] = '\0';
+  return out;
+}
+
+static char* mzxml_getAttributeSafe(char* attrString, char* attribute) {
+  if (attrString == NULL) return NULL;
+  return getAttribute(attrString, attribute);
+}
+
+static uint32_t mzxml_read_u32(const unsigned char* p, int bigEndian) {
+  if (bigEndian) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+  }
+  return ((uint32_t)p[3] << 24) | ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[0];
+}
+
+static uint64_t mzxml_read_u64(const unsigned char* p, int bigEndian) {
+  if (bigEndian) {
+    return ((uint64_t)p[0] << 56) | ((uint64_t)p[1] << 48) | ((uint64_t)p[2] << 40) | ((uint64_t)p[3] << 32) |
+      ((uint64_t)p[4] << 24) | ((uint64_t)p[5] << 16) | ((uint64_t)p[6] << 8) | (uint64_t)p[7];
+  }
+  return ((uint64_t)p[7] << 56) | ((uint64_t)p[6] << 48) | ((uint64_t)p[5] << 40) | ((uint64_t)p[4] << 32) |
+    ((uint64_t)p[3] << 24) | ((uint64_t)p[2] << 16) | ((uint64_t)p[1] << 8) | (uint64_t)p[0];
+}
+
+static float mzxml_read_float32(const unsigned char* p, int bigEndian) {
+  uint32_t u = mzxml_read_u32(p, bigEndian);
+  float f;
+  memcpy(&f, &u, 4);
+  return f;
+}
+
+static double mzxml_read_float64(const unsigned char* p, int bigEndian) {
+  uint64_t u = mzxml_read_u64(p, bigEndian);
+  double d;
+  memcpy(&d, &u, 8);
+  return d;
+}
+
+static float mzxml_parseRtToMinutes(char* rt) {
+  // mzXML commonly uses ISO-8601 durations like PT351.23S.
+  // This handles PT#S, PT#M, and PT#M#S. It also tolerates bare numeric seconds.
+  if (rt == NULL) return 0;
+  if (strncmp(rt, "PT", 2) != 0) return atof(rt) / 60.0f;
+
+  float minutes = 0;
+  char* p = rt + 2;
+  while (*p != '\0') {
+    char* end = p;
+    double value = strtod(p, &end);
+    if (end == p) break;
+    if (*end == 'H')
+      minutes += (float)(value * 60.0);
+    else if (*end == 'M')
+      minutes += (float)value;
+    else if (*end == 'S')
+      minutes += (float)(value / 60.0);
+    p = end;
+    if (*p != '\0') p++;
+  }
+  return minutes;
+}
+
+static uint32_t mzxml_countScans(char* data) {
+  XmlElement element;
+  element.name = NULL;
+  element.attributes = NULL;
+  uint64_t pos = 0;
+  uint32_t count = 0;
+
+  while (1) {
+    getNextElement(&element, data, &pos);
+    if (strcmp(element.name, "scan") == 0 && !element.isClosing) count++;
+    if (strcmp(element.name, "mzXML") == 0 && element.isClosing) break;
+  }
+
+  free(element.name);
+  free(element.attributes);
+  return count;
+}
+
+static void mzxml_decodePeaksIntoScan(char* b64data, XmlElement* peaksElement, Scan* scan, ScanFilter* scanFilter,
+                                      uint32_t peaksCount) {
+  char* precisionStr = mzxml_getAttributeSafe(peaksElement->attributes, "precision");
+  char* byteOrder = mzxml_getAttributeSafe(peaksElement->attributes, "byteOrder");
+  char* compressionType = mzxml_getAttributeSafe(peaksElement->attributes, "compressionType");
+  char* pairOrder = mzxml_getAttributeSafe(peaksElement->attributes, "pairOrder");
+
+  int precision = precisionStr ? atoi(precisionStr) : 32;
+  int bytesPerValue = precision == 64 ? 8 : 4;
+  int bigEndian = 1;
+  if (byteOrder && (strcmp(byteOrder, "little") == 0 || strcmp(byteOrder, "little-endian") == 0)) bigEndian = 0;
+
+  char* cleanB64 = mzxml_stripWhitespace(b64data);
+  size_t b64DecLen = b64_decoded_size(cleanB64);
+  unsigned char* b64Dec = malloc(b64DecLen);
+  b64_decode(cleanB64, b64Dec, b64DecLen);
+
+  unsigned char* bytes = b64Dec;
+  uLongf byteLen = b64DecLen;
+  unsigned char* inflated = NULL;
+
+  if (compressionType && strcmp(compressionType, "zlib") == 0) {
+    byteLen = (uLongf)peaksCount * 2 * bytesPerValue;
+    inflated = malloc(byteLen);
+    int res = uncompress(inflated, &byteLen, b64Dec, b64DecLen);
+    if (res == 0) {
+      bytes = inflated;
+    } else {
+      free(inflated);
+      inflated = NULL;
+      bytes = b64Dec;
+      byteLen = b64DecLen;
+    }
+  }
+
+  uint32_t availablePairs = (uint32_t)(byteLen / (2 * bytesPerValue));
+  if (peaksCount == 0 || peaksCount > availablePairs) peaksCount = availablePairs;
+
+  float* mzs = malloc(peaksCount * sizeof(float));
+  float* intensities = malloc(peaksCount * sizeof(float));
+
+  int mzFirst = 1;
+  if (pairOrder && strcmp(pairOrder, "int-m/z") == 0) mzFirst = 0;
+
+  for (uint32_t i = 0; i < peaksCount; i++) {
+    unsigned char* p1 = bytes + (uint64_t)i * 2 * bytesPerValue;
+    unsigned char* p2 = p1 + bytesPerValue;
+
+    double first = precision == 64 ? mzxml_read_float64(p1, bigEndian) : mzxml_read_float32(p1, bigEndian);
+    double second = precision == 64 ? mzxml_read_float64(p2, bigEndian) : mzxml_read_float32(p2, bigEndian);
+
+    if (mzFirst) {
+
+      mzs[i] = (float)first;
+      intensities[i] = (float)second;
+
+    } else {
+      intensities[i] = (float)first;
+      mzs[i] = (float)second;
+    }
+  }
+
+  // mzXML does not encode separate centroid/profile binary arrays like mzML.
+  // Put the decoded data in the centroid fields by default. If scanType says
+  // profile, also mark the filter as profile and use the profile fields.
+  if (scanFilter->scanMode == 1) {
+    scan->prMzs = mzs;
+    scan->prIntensities = intensities;
+    scan->prTotal = peaksCount;
+  } else {
+    scan->centMzs = mzs;
+    scan->centIntensities = intensities;
+    scan->centTotal = peaksCount;
+  }
+
+  free(cleanB64);
+  free(b64Dec);
+  free(inflated);
+  free(precisionStr);
+  free(byteOrder);
+  free(compressionType);
+  free(pairOrder);
+}
+
+static void mzxml_parseScan(RawFile* rawFile, XmlElement* element, uint64_t* pos, uint32_t* scanIndex,
+                            uint32_t* scanFilterIndex) {
+  uint32_t currentIndex = *scanIndex;
+  *scanIndex = *scanIndex + 1;
+
+  Scan* scan = &rawFile->scans[currentIndex];
+  ScanFilter scanFilter;
+  scanFilter.precursorMz = NULL;
+  scanFilter.energy = NULL;
+
+  scanFilter.msLevel = 1;
+  scanFilter.nPrecursors = 0;
+  scanFilter.precursorMz = malloc(0);
+  scanFilter.energy = malloc(0);
+  scanFilter.polarity = 2;
+  scanFilter.scanType = 0;
+  scanFilter.scanMode = 0; // default to centroid unless scanType/profile says otherwise
+  scanFilter.analyzer = 6;
+  scanFilter.lowMass = 0;
+  scanFilter.highMass = 0;
+
+  uint32_t peaksCount = 0;
+  int numCEs = 0;
+
+  char* msLevelStr = mzxml_getAttributeSafe(element->attributes, "msLevel");
+  if (msLevelStr) {
+    scanFilter.msLevel = atoi(msLevelStr);
+
+    free(msLevelStr);
+  }
+
+  char* peaksCountStr = mzxml_getAttributeSafe(element->attributes, "peaksCount");
+  if (peaksCountStr) {
+
+    peaksCount = atoi(peaksCountStr);
+    free(peaksCountStr);
+  }
+
+  char* rtStr = mzxml_getAttributeSafe(element->attributes, "retentionTime");
+  if (rtStr) {
+    scan->time = mzxml_parseRtToMinutes(rtStr);
+    free(rtStr);
+  }
+
+  char* polarityStr = mzxml_getAttributeSafe(element->attributes, "polarity");
+  if (polarityStr) {
+    if (strcmp(polarityStr, "+") == 0 || strcmp(polarityStr, "positive") == 0)
+      scanFilter.polarity = 1;
+    else if (strcmp(polarityStr, "-") == 0 || strcmp(polarityStr, "negative") == 0)
+      scanFilter.polarity = 0;
+    free(polarityStr);
+  }
+
+  char* scanTypeStr = mzxml_getAttributeSafe(element->attributes, "scanType");
+  if (scanTypeStr) {
+    if (strcmp(scanTypeStr, "Full") == 0 || strcmp(scanTypeStr, "full") == 0) scanFilter.scanType = 0;
+    if (strcmp(scanTypeStr, "profile") == 0 || strcmp(scanTypeStr, "Profile") == 0) scanFilter.scanMode = 1;
+    free(scanTypeStr);
+  }
+
+  char* centroidedStr = mzxml_getAttributeSafe(element->attributes, "centroided");
+  if (centroidedStr) {
+    scanFilter.scanMode = atoi(centroidedStr) ? 0 : 1;
+    free(centroidedStr);
+  }
+
+  char* lowMzStr = mzxml_getAttributeSafe(element->attributes, "lowMz");
+  if (lowMzStr) {
+    scanFilter.lowMass = atof(lowMzStr);
+    free(lowMzStr);
+  }
+
+  char* highMzStr = mzxml_getAttributeSafe(element->attributes, "highMz");
+  if (highMzStr) {
+    scanFilter.highMass = atof(highMzStr);
+    free(highMzStr);
+  }
+
+  while (!(strcmp(element->name, "scan") == 0 && element->isClosing)) {
+    getNextElement(element, rawFile->data, pos);
+    if (strcmp(element->name, "scan") == 0 && !element->isClosing) {
+      mzxml_parseScan(rawFile, element, pos, scanIndex, scanFilterIndex);
+      continue;
+    }
+
+    if (strcmp(element->name, "precursorMz") == 0 && !element->isClosing) {
+      char* collisionEnergyStr = mzxml_getAttributeSafe(element->attributes, "collisionEnergy");
+      if (collisionEnergyStr) {
+        numCEs++;
+        scanFilter.energy = realloc(scanFilter.energy, numCEs * sizeof(double));
+        scanFilter.energy[numCEs - 1] = atof(collisionEnergyStr);
+        free(collisionEnergyStr);
+      }
+
+      char* precursorText = getData(rawFile->data, pos);
+      if (precursorText) {
+        scanFilter.nPrecursors++;
+        scanFilter.precursorMz = realloc(scanFilter.precursorMz, scanFilter.nPrecursors * sizeof(double));
+        scanFilter.precursorMz[scanFilter.nPrecursors - 1] = atof(precursorText);
+        free(precursorText);
+      }
+    }
+
+    if (strcmp(element->name, "peaks") == 0 && !element->isClosing) {
+      char* peaksData = getData(rawFile->data, pos);
+      mzxml_decodePeaksIntoScan(peaksData, element, scan, &scanFilter, peaksCount);
+      free(peaksData);
+    }
+  }
+
+  int found = 0;
+  for (uint32_t k = 0; k < *scanFilterIndex; k++) {
+    if (compareFilters(&scanFilter, &rawFile->scanFilters[k])) {
+      scan->filter = k;
+      free(scanFilter.precursorMz);
+      free(scanFilter.energy);
+      found = 1;
+      break;
+    }
+  }
+
+  if (!found) {
+    scan->filter = *scanFilterIndex;
+    rawFile->scanFilters[*scanFilterIndex] = scanFilter;
+    *scanFilterIndex = *scanFilterIndex + 1;
+  }
+}
+
+static void mzxml_fillScans(RawFile* rawFile, XmlElement* element, uint64_t* pos) {
+  uint32_t scanIndex = 0;
+  uint32_t scanFilterIndex = 0;
+
+  while (!(strcmp(element->name, "msRun") == 0 && element->isClosing)) {
+    getNextElement(element, rawFile->data, pos);
+    if (strcmp(element->name, "scan") == 0 && !element->isClosing) {
+      mzxml_parseScan(rawFile, element, pos, &scanIndex, &scanFilterIndex);
+    }
+  }
+
+  rawFile->numScans = scanIndex;
+  rawFile->nFilters = scanFilterIndex;
+}
+
+int16_t initializeMzxml(RawFile* rawFile, int profile, int centroid) {
+  XmlElement* element = malloc(sizeof(XmlElement));
+  element->name = NULL;
+  element->attributes = NULL;
+
+  uint32_t numScans = mzxml_countScans(rawFile->data);
+  rawFile->numScans = numScans;
+  rawFile->nFilters = numScans;
+  rawFile->scans = calloc(numScans, sizeof(Scan));
+  rawFile->scanFilters = malloc(sizeof(ScanFilter) * numScans);
+  rawFile->numChroms = 0;
+  rawFile->chromatograms = NULL;
+
+  for (uint32_t i = 0; i < numScans; i++) {
+    rawFile->scanFilters[i].precursorMz = NULL;
+    rawFile->scanFilters[i].energy = NULL;
+    rawFile->scans[i].prIntensities = NULL;
+    rawFile->scans[i].prMzs = NULL;
+    rawFile->scans[i].centIntensities = NULL;
+    rawFile->scans[i].centMzs = NULL;
+    rawFile->scans[i].prTotal = 0;
+    rawFile->scans[i].centTotal = 0;
+    rawFile->scans[i].time = 0;
+  }
+
+  uint64_t pos = 0;
+  while (1) {
+    getNextElement(element, rawFile->data, &pos);
+    if (strcmp(element->name, "msRun") == 0 && !element->isClosing) {
+      mzxml_fillScans(rawFile, element, &pos);
+    }
+    if (strcmp(element->name, "mzXML") == 0 && element->isClosing) break;
+  }
+
+  rawFile->fileName = malloc(9);
+  strcpy(rawFile->fileName, "Filename");
+  rawFile->instrumentModel = malloc(6);
+  strcpy(rawFile->instrumentModel, "Model");
+
+  free(element->name);
+  free(element->attributes);
+  free(element);
+  return 1;
+}
