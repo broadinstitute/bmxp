@@ -217,6 +217,7 @@ def test_internal_standard_correction(
 def test_pool_correction(
     path_dc_input_1,
     path_sample_info_1,
+    df_dc_input_1,
     path_dc_input_2,
     path_sample_info_2,
     pickled_results,
@@ -265,6 +266,17 @@ def test_pool_correction(
         .apply(np.floor),
         equal_nan=True,
     ).all()
+
+    # linear with Skip_Pool_DC=True for every 5th row
+    data = df_dc_input_1.copy()
+    data.insert(0, "Skip_Pool_DC", df_dc_input_1.index % 5 == 0)
+    a = b.DriftCorrection(data, path_sample_info_1)
+    a.pool_correct(
+        interpolation="linear", pool="PREFA", override=True, max_missing_percent=100
+    )
+    result = pickled_results["DCinput1_linear_PREFA_skip_pool_dc"]
+    assert a.data.equals(result.loc[:, a.data.columns])
+    assert a.cvs["Batches Skipped"].equals(result["Batches Skipped"])
 
 
 def test_cv_calculation(

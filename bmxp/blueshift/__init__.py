@@ -12,7 +12,7 @@ from tqdm import tqdm
 from scipy import interpolate
 from bmxp import FMDATA, IMDATA, POOL_INJ_TYPES
 
-__version__ = "0.2.8"
+__version__ = "0.2.9"
 
 
 class DriftCorrection:  # pylint: disable=too-many-instance-attributes
@@ -63,6 +63,7 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         self.QCRole = imdata["QCRole"]
         self.Non_Quant = fmdata["Non_Quant"]
         self.Batches_Skipped = fmdata["Batches Skipped"]
+        self.skip_pool_dc = fmdata["Skip_Pool_DC"]
 
         if default_met_col:
             self.met_col = default_met_col
@@ -223,6 +224,13 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         if self.met_col in metadata.columns:
             metadata = metadata.astype({self.met_col: str})
         metadata = metadata.replace("nan", np.nan)
+
+        if self.skip_pool_dc not in metadata.columns:
+            metadata[self.skip_pool_dc] = False
+        else:
+            metadata[self.skip_pool_dc] = (
+                metadata[self.skip_pool_dc].fillna(False).astype(bool)
+            )
 
         return data, metadata
 
@@ -477,7 +485,8 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
     def _flag_skipped_rows(self, pool, max_missing_percent, batch_count):
         """
         Flag rows that can't be drift corrected: they have zero pools, they have fewer
-        than the minimum required pools, or there is only one batch and only one pool
+        than the minimum required pools, there is only one batch and only one pool, or
+        the user has indicated to skip the row in the metadata.
         :param pool: str, drift correction pool (typically PREFA or PREFB)
         :param max_missing_percent: int, max percent of pools allowed to be missing
         :param batch_count: int, number of batches used for pool correction
@@ -487,7 +496,11 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
         min_present = (1 - max_missing_percent / 100) * len(self.pools[pool])
         pool_data = self.data.loc[:, pools].values
         pool_counts = np.sum(pool_data > 0, axis=1)
-        to_skip = (pool_counts == 0) | (pool_counts < min_present)
+        to_skip = (
+            (pool_counts == 0)
+            | (pool_counts < min_present)
+            | self.metadata[self.skip_pool_dc].values
+        )
         if batch_count == 1:
             to_skip = to_skip | (pool_counts == 1)
         return to_skip
