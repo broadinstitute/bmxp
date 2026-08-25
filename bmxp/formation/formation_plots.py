@@ -138,10 +138,10 @@ def plot_formation_line_plot(
     if not is_aggregate:
         plt.ylim(bottom=0)
     if types == "sample_type":
-        handle_median_plot_labels(row, inj_metadata, sample_names, handles)
+        _handle_median_plot_labels(row, inj_metadata, sample_names, handles)
 
 
-def handle_median_plot_labels(values, inj_metadata, sample_names, leg_handles):
+def _handle_median_plot_labels(values, inj_metadata, sample_names, leg_handles):
     """Handles outliers and column break labels on Formation sample median plot"""
     combined_median_df = pd.concat(
         [

@@ -3,7 +3,6 @@
 Tests for blueshift
 """
 
-import pickle
 from pathlib import Path
 import pytest
 import pandas as pd

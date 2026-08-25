@@ -1,18 +1,21 @@
+import io
 import logging
 import re
-import io
-import copy
-from scipy.stats import zscore
+
+import matplotlib
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
-import matplotlib
-from matplotlib.backends.backend_pdf import PdfPages
-import matplotlib.dates as mdates
 import xlsxwriter
-from bmxp.gravity import spearman, pearson
+from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.lines import Line2D
+from scipy.stats import zscore
+from sklearn.decomposition import PCA
+
+import bmxp.formation.formation_plots as fplots
 from bmxp import FMDATA, IMDATA
-from .formation_plots import *
+from bmxp.gravity import pearson, spearman
 
 matplotlib.use("agg")
 
@@ -26,7 +29,7 @@ __version__ = "0.3.7"
 def parse_formatted(dataset):
     """
     Given a formatted dataset, parses it into the abundances, injection metadata,
-    feature metadta, and the sample names
+    feature metadata, and the sample names
     """
     if isinstance(dataset, pd.DataFrame):
         df = dataset
@@ -234,7 +237,7 @@ def report(
         if "date_injected" in smdata.columns:
             try:
                 date = str(smdata["date_injected"].min().strftime("%B %d, %Y"))
-            except:
+            except:  # pylint: disable=bare-except
                 date = "Unknown"
             plt.text(
                 0.5,
@@ -265,7 +268,7 @@ def report(
         pdf.savefig()
         plt.close("all")
         # create zoomable PCA plot
-        plot_formation_zoomable_plot(
+        fplots.plot_formation_zoomable_plot(
             pca_df,
             "PCA of metabolites labeled by sample name",
             f"PC1 ({round(sample_pca.explained_variance_ratio_[0] * 100)}"
@@ -282,7 +285,7 @@ def report(
             index=transposed_s_data.columns,
         )
         # create zoomable loadings plots
-        plot_formation_zoomable_plot(
+        fplots.plot_formation_zoomable_plot(
             components_df,
             "Loadings plot labeled by Annotation_ID",
             "Principal Component 1",
@@ -291,7 +294,7 @@ def report(
             pdf,
             rasterized=True,
         )
-        plot_formation_zoomable_plot(
+        fplots.plot_formation_zoomable_plot(
             components_df,
             "Loadings plot labeled by Compound_ID",
             "Principal Component 1",
@@ -308,7 +311,7 @@ def report(
         try:
             cmap = matplotlib.colormaps["magma"].copy()
         except AttributeError:
-            cmap = plt.cm.get_cmap("magma").copy()
+            cmap = plt.cm.get_cmap("magma").copy()  # pylint: disable=no-member
         cmap.set_bad(color=nan_color)
         graph_index = 0
         for i, column_name in enumerate(smdata.columns):
@@ -397,7 +400,7 @@ def report(
         if not internal_standard_s_data.empty:
             is_ids = fmdata.loc[internal_standard_s_data.index, "Annotation_ID"]
             internal_standard_s_data.reset_index().apply(
-                lambda row: plot_formation_line_plot(
+                lambda row: fplots.plot_formation_line_plot(
                     row,
                     graph_index + 3 * row.name,
                     smdata,
@@ -420,7 +423,7 @@ def report(
                 )
 
             norm.reset_index().apply(
-                lambda row: plot_formation_line_plot(
+                lambda row: fplots.plot_formation_line_plot(
                     row,
                     graph_index,
                     smdata,
@@ -442,7 +445,7 @@ def report(
             plt.gca().add_artist(leg2)
             graph_index += 3
         sample_medians = sample_data.fillna(0).median()
-        plot_formation_line_plot(
+        fplots.plot_formation_line_plot(
             sample_medians,
             graph_index,
             smdata,
@@ -463,7 +466,7 @@ def report(
         colors = smdata["sample_type"].copy().astype(object).map(sample_colors)
         if len(median_data.index) <= 1500:
             for i in range(0, len(median_data.index), 150):
-                plot_formation_quartile(
+                fplots.plot_formation_quartile(
                     median_data.iloc[i : i + 150].T,
                     graph_index,
                     sample_colors,
@@ -479,7 +482,7 @@ def report(
         pools = [
             inj_type.upper() for inj_type in inj_types if inj_type.startswith("pref")
         ]
-        create_pools_cv_table(fmdata, pools, pdf)
+        fplots.create_pools_cv_table(fmdata, pools, pdf)
         plt.tight_layout()
         pdf.savefig()  # saves the current figure into a pdf page
         plt.close("all")
@@ -494,6 +497,7 @@ def report(
 def report_from_formatted(
     dataset, dataset_name=None, out_filepath=None, write_pdf=True
 ):
+    """Generate a formation report from a formatted dataset."""
     if dataset_name is None:
         if isinstance(dataset, pd.DataFrame):
             dataset_name = "Dataset"
@@ -995,7 +999,7 @@ def combine_feature_metadata(data, fmdata, fmdata_formats, abundance_threshold=1
         data = data.loc[dataset_index, :]
         fmdata = fmdata.loc[dataset_index, :]
 
-    # sort and drop index (which was Compound_ID); Compound_ID should be in feature metadata
+    # sort and drop index (which was Compound_ID); Compound_ID should be in fmdata
     fmdata = fmdata.loc[dataset_index, :].reset_index(drop=True)
     data.reset_index(drop=True, inplace=True)
     # fill non_quants and cast as object
