@@ -26,6 +26,7 @@ import pandas as pd
 import numpy as np
 import networkx as nx
 from bmxp.gravity import fallback
+from bmxp.gravity.edge_cliques import max_edge_weight_clique
 from bmxp import FMDATA
 
 dll_name = "correlation"
@@ -87,7 +88,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 
 def free_p(p):
@@ -129,54 +130,42 @@ def deconvolute(df_index, graph, fmdata):
     num_label = fmdata["Cluster_Num"]
     size_label = fmdata["Cluster_Size"]
     cluster_df = pd.DataFrame({num_label: None, size_label: 1}, index=df_index)
-    i = 0
-    while True:
-        # delete singletons
-        graph.remove_nodes_from(list(nx.isolates(graph)))
+    try:
+        sorted_features = sorted(df_index)
+    except TypeError:
+        sorted_features = sorted(
+            df_index,
+            key=lambda feature: (
+                type(feature).__module__,
+                type(feature).__qualname__,
+                repr(feature),
+            ),
+        )
+    feature_rank = {feature: rank for rank, feature in enumerate(sorted_features)}
+    clusters = []
+    components = sorted(nx.connected_components(graph), key=len, reverse=True)
+    for component in components:
+        component_graph = graph.subgraph(component).copy()
+        while True:
+            # delete singletons
+            component_graph.remove_nodes_from(list(nx.isolates(component_graph)))
+            clique, clique_weight = max_edge_weight_clique(component_graph)
+            if not clique:
+                break
+            features = sorted(clique, key=feature_rank.__getitem__)
+            clusters.append((features, len(clique), clique_weight))
+            component_graph.remove_nodes_from(clique)
 
-        # build list of cliques of the largest size
-        cliques = []
-        max_size = 0
-        for clique in nx.find_cliques(graph):
-            if len(clique) > max_size:
-                max_size = len(clique)
-                cliques = [[set(clique), 0]]
-            elif len(clique) == max_size:
-                cliques.append([set(clique), 0])
-        if not cliques:
-            break
-        # calculate correlation of largest cliques
-        for clique in cliques:
-            clique_graph = graph.subgraph(clique[0])
-            temp = 0
-            for edge in clique_graph.edges(data=True):
-                temp += edge[2]["coor"]
-            clique[1] = temp
-
-        # sort by best corr
-        cliques.sort(key=lambda x: x[1], reverse=True)
-        to_remove = set()
-        while len(cliques) > 0:
-            # add the best one
-            best_clique = cliques[0]
-            features = list(best_clique[0])
-            cluster_df.loc[features, num_label] = i
-            cluster_df.loc[features, size_label] = max_size
-            if i % 50 == 0:
-                LOGGER.info(f"On cluster {i}, which contains {max_size} features.")
-            i += 1
-
-            # search the clique for ones to remove
-            cliques = [
-                clique
-                for clique in cliques
-                if not clique[0].intersection(best_clique[0])
-            ]
-            # add to our "to remove" queue
-            to_remove.update(best_clique[0])
-        graph.remove_nodes_from(to_remove)
-        if max_size == 2:
-            break
+    clusters.sort(
+        key=lambda cluster: (
+            -cluster[1],
+            -cluster[2],
+            tuple(feature_rank[feature] for feature in cluster[0]),
+        )
+    )
+    for cluster_num, (features, cluster_size, _) in enumerate(clusters):
+        cluster_df.loc[features, num_label] = cluster_num
+        cluster_df.loc[features, size_label] = cluster_size
     return cluster_df
 
 

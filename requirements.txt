@@ -7,3 +7,4 @@ scikit-learn>=1
 xlsxwriter
 openpyxl
 tqdm
+pypdf>=4

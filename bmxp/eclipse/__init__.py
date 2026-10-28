@@ -8,8 +8,10 @@ import collections
 import copy
 import io
 import logging
+import tempfile
 import textwrap
 from itertools import product
+from pathlib import Path
 from typing import List, Optional, Union
 
 import matplotlib.pyplot as plt
@@ -18,6 +20,7 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from matplotlib.backends.backend_pdf import PdfPages
+from pypdf import PdfWriter
 from scipy import interpolate
 
 from bmxp import FMDATA
@@ -29,7 +32,7 @@ LOGGER.setLevel(logging.INFO)
 np.random.seed(0)
 
 lowess = sm.nonparametric.lowess
-__version__ = "0.2.11"
+__version__ = "0.2.12"
 
 
 def dataset_loops(attr=None):
@@ -1284,10 +1287,6 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
             datasets_2 = list(self.datasets)
         if isinstance(datasets_2, str):
             datasets_2 = [datasets_2]
-        if to_bytes:
-            file_handle = io.BytesIO()
-        else:
-            file_handle = filepath
 
         # format plot text
         (
@@ -1302,47 +1301,77 @@ class MSAligner:  # pylint: disable=too-many-instance-attributes
             1,
         )
 
-        # create scaling report
-        with PdfPages(file_handle) as pdf:
-            for ds1 in datasets_1:
-                for ds2 in datasets_2:
-                    if (
-                        ds1 == ds2
-                        or ds1 not in self.scalers
-                        or ds2 not in self.scalers[ds1]
-                    ):
-                        continue
-                    for results in [False, True]:
-                        if results and (
-                            ds1 not in self.matches or ds2 not in self.matches[ds1]
+        def write_page(pdf, ds1, ds2, results):
+            eval_chart(self, ds1, ds2, show=False, results=results)
+            figure = plt.gcf()
+            try:
+                for ax in figure.get_axes():
+                    ax.set_title(
+                        "\n".join(textwrap.wrap(ax.get_title(), title_wrap_width)),
+                        fontsize=10,
+                    )
+                    ax.set_xlabel(
+                        "\n".join(textwrap.wrap(ax.get_xlabel(), x_label_wrap_width)),
+                        fontsize=8,
+                        labelpad=5,
+                    )
+                    ax.set_ylabel(
+                        "\n".join(textwrap.wrap(ax.get_ylabel(), y_label_wrap_width)),
+                        fontsize=8,
+                        labelpad=5,
+                    )
+                figure.tight_layout(pad=plot_padding)
+                pdf.savefig(figure)
+            finally:
+                plt.close(figure)
+
+        file_handle = None
+        with tempfile.TemporaryDirectory(prefix="bmxp_report_") as temp_dir:
+            chunk_paths = []
+            pdf = None
+            page_count = 0
+            try:
+                for ds1 in datasets_1:
+                    for ds2 in datasets_2:
+                        if (
+                            ds1 == ds2
+                            or ds1 not in self.scalers
+                            or ds2 not in self.scalers[ds1]
                         ):
                             continue
-                        plt.figure(figsize=(24, 14))
-                        eval_chart(self, ds1, ds2, show=False, results=results)
-                        for ax in plt.gcf().get_axes():
-                            ax.set_title(
-                                "\n".join(
-                                    textwrap.wrap(ax.get_title(), title_wrap_width)
-                                ),
-                                fontsize=10,
-                            )
-                            ax.set_xlabel(
-                                "\n".join(
-                                    textwrap.wrap(ax.get_xlabel(), x_label_wrap_width)
-                                ),
-                                fontsize=8,
-                                labelpad=5,
-                            )
-                            ax.set_ylabel(
-                                "\n".join(
-                                    textwrap.wrap(ax.get_ylabel(), y_label_wrap_width)
-                                ),
-                                fontsize=8,
-                                labelpad=5,
-                            )
-                        plt.tight_layout(pad=plot_padding)
-                        pdf.savefig()
-                        plt.close("all")
+                        for results in [False, True]:
+                            if results and (
+                                ds1 not in self.matches or ds2 not in self.matches[ds1]
+                            ):
+                                continue
+                            if page_count % 25 == 0:
+                                if pdf is not None:
+                                    pdf.close()
+                                chunk_path = (
+                                    Path(temp_dir)
+                                    / f"report_chunk_{len(chunk_paths):04d}.pdf"
+                                )
+                                chunk_paths.append(chunk_path)
+                                pdf = PdfPages(chunk_path)
+                            write_page(pdf, ds1, ds2, results)
+                            page_count += 1
+            finally:
+                if pdf is not None:
+                    pdf.close()
+
+            writer = PdfWriter()
+            try:
+                for chunk_path in chunk_paths:
+                    writer.append(str(chunk_path))
+                if to_bytes:
+                    file_handle = io.BytesIO()
+                    writer.write(file_handle)
+                else:
+                    with open(filepath, "wb") as output:
+                        writer.write(output)
+            finally:
+                writer.close()
+
         if to_bytes:
             file_handle.seek(0)
             return file_handle
@@ -2280,7 +2309,7 @@ def eval_chart(self, key1, key2, show=True, results=False):
         plt.title(f"{descr} {label1} vs {label2}")
         plt.xlabel(f"{title} {descr} {label1}")
         plt.ylabel(f"{title} {descr} ({label2} - {label1}) : {mode}")
-        plt.plot(scalers["x"], scalers["y"], color="red", rasterized=True)
+        plt.plot(scalers["x"], scalers["y"], color="red")
 
         # plot the scaled
         plt.subplot(len(self.descriptors), 3, 3 * i + 2)
@@ -2294,13 +2323,13 @@ def eval_chart(self, key1, key2, show=True, results=False):
         plt.title(f"{descr} {label1} vs {label2}")
         plt.xlabel(f"{title} {descr} {label1}")
         plt.ylabel(f"{title} {descr} ({label2} - {label1}) : {mode}")
-        plt.axhline(y=0, color="red", rasterized=True)
+        plt.axhline(y=0, color="red")
 
         # plot histogram
         plt.subplot(len(self.descriptors), 3, 3 * i + 3)
         plt.hist(
             x=(s_y_vals),
-            bins="auto",
+            bins=50,
             alpha=0.7,
             rwidth=0.85,
         )
