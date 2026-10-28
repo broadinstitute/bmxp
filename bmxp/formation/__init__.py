@@ -23,7 +23,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.3.8"
+__version__ = "0.3.9"
 
 
 def parse_formatted(dataset):
@@ -718,45 +718,51 @@ def label_most_abundant(data, metadata, corr_method="spearman"):
     feature is annotated or has the highest mean abundance.
 
     :param data: DataFrame, data columns that were used for clustering
-    :param metadata: DataFrame, contains columns "Annotation_ID", "Cluster_Num", and
-    "Cluster_Size" at minimum
+    :param metadata: DataFrame, requires columns "Cluster_Num" and "Cluster_Size"
     :param corr_method: str, correlation method used in clustering, "spearman" or
     "pearson", defaults to "spearman"
-    :return: DataFrame, Primary and Corr_To_Primary columns
+    :return: DataFrame, "Primary" and "Corr_To_Primary" columns
     """
-    metadata = metadata.copy()
-    # explicitly cast as str in case the Annotation_ID column is empty
-    metadata["Annotation_ID"] = metadata["Annotation_ID"].fillna("")
-    # identify the primary adduct
-    for cluster_num in metadata["Cluster_Num"].unique():
-        if not cluster_num and cluster_num != 0:
-            continue
-        cluster_index = metadata.index[metadata["Cluster_Num"] == cluster_num]
-        key = (metadata["Cluster_Num"] == cluster_num).values & (
-            metadata["Annotation_ID"] > ""
-        ).values
+    results = pd.DataFrame(index=metadata.index, columns=["Primary", "Corr_To_Primary"])
+    if "Annotation_ID" in metadata:
+        annotated = metadata["Annotation_ID"].fillna("") > ""
+    else:
+        annotated = pd.Series(False, index=metadata.index)
+    clustered = metadata["Cluster_Num"].notna()
+    annotated = annotated & clustered
+    annotated_clusters = metadata["Cluster_Num"].loc[annotated].unique()
+    results.loc[annotated, ["Primary", "Corr_To_Primary"]] = [True, 1.0]
 
-        if key.any():
-            metadata.loc[key, "Primary"] = True
-            max_idx = metadata.index[key][0]
-        else:
-            max_idx = data.loc[cluster_index, :].fillna(0).mean(axis="columns").idxmax()
-            metadata.loc[max_idx, "Primary"] = True
-
-        for feature in cluster_index:
-            arr1 = data.loc[feature, :].values.astype(np.float64)
-            arr2 = data.loc[max_idx, :].values.astype(np.float64)
-            if corr_method == "spearman":
-                metadata.loc[feature, "Corr_To_Primary"] = spearman(
-                    arr1, arr2, "drop", legacy_mode=True
-                )
-            else:
-                metadata.loc[feature, "Corr_To_Primary"] = pearson(arr1, arr2)
+    # find primary features for clusters that don't have any annotated features
+    unannotated_mask = ~metadata["Cluster_Num"].isin(annotated_clusters) & clustered
+    unannotated_clusters = metadata.loc[unannotated_mask]
+    candidates = pd.DataFrame(
+        {
+            "Cluster_Num": unannotated_clusters["Cluster_Num"],
+            "_mean": data.reindex(unannotated_clusters.index).fillna(0).mean(axis=1),
+        }
+    )
+    primary_idx = candidates.groupby("Cluster_Num", sort=False)["_mean"].idxmax()
+    results.loc[primary_idx.values, ["Primary", "Corr_To_Primary"]] = [True, 1.0]
 
     # label the singletons
-    metadata.loc[metadata["Cluster_Size"] == 1, "Primary"] = True
+    results.loc[metadata["Cluster_Size"] == 1, "Primary"] = True
 
-    return metadata[["Primary", "Corr_To_Primary"]]
+    primary = results["Primary"] & clustered
+    for _, group in metadata.loc[clustered].groupby("Cluster_Num", sort=False):
+        # calculate correlations to primary feature of the cluster
+        primary_idx = group.index[primary.loc[group.index]][0]
+        arr2 = data.loc[primary_idx].to_numpy(dtype=np.float64)
+        for feature in group.index:
+            if feature == primary_idx:
+                continue
+            arr1 = data.loc[feature].to_numpy(dtype=np.float64)
+            if corr_method == "spearman":
+                corr = spearman(arr1, arr2, "drop", legacy_mode=True)
+            else:
+                corr = pearson(arr1, arr2)
+            results.loc[feature, "Corr_To_Primary"] = corr
+    return results
 
 
 def apply_pool_instructions(data, feature_instructions, inplace=False):
