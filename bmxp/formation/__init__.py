@@ -23,7 +23,7 @@ logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-__version__ = "0.3.7"
+__version__ = "0.3.8"
 
 
 def parse_formatted(dataset):
@@ -1042,12 +1042,6 @@ def to_excel(
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output)
     worksheet = workbook.add_worksheet(method_name)
-    worksheet.add_write_handler(
-        float,
-        lambda worksheet, row, col, val, fmt=None: (
-            None if not pd.isnull(val) else worksheet.write_blank(row, col, None, fmt)
-        ),
-    )
     formats = {
         "date": workbook.add_format(
             {
@@ -1066,6 +1060,9 @@ def to_excel(
         ),
         "center": workbook.add_format(
             {"font_name": "Arial", "font_size": 9, "align": "center"}
+        ),
+        "right": workbook.add_format(
+            {"font_name": "Arial", "font_size": 9, "align": "right"}
         ),
         "float2": workbook.add_format(
             {"font_name": "Arial", "font_size": 9, "num_format": "0.00"}
@@ -1092,6 +1089,15 @@ def to_excel(
             {"font_name": "Arial", "font_size": 9, "num_format": "0%"}
         ),
     }
+
+    def handle_float(worksheet, row, col, val, fmt=None):
+        if pd.isnull(val):
+            return worksheet.write_blank(row, col, None, fmt)
+        if np.isinf(val):
+            return worksheet.write(row, col, "inf", formats["right"])
+        return None
+
+    worksheet.add_write_handler(float, handle_float)
 
     column_formats = {
         header: formats[label] for header, label in fmdata_formats.items()
