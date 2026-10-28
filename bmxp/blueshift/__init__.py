@@ -12,7 +12,7 @@ from tqdm import tqdm
 from scipy import interpolate
 from bmxp import FMDATA, IMDATA, POOL_INJ_TYPES
 
-__version__ = "0.2.9"
+__version__ = "0.2.10"
 
 
 class DriftCorrection:  # pylint: disable=too-many-instance-attributes
@@ -148,7 +148,9 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
             raise ValueError("Samples must be sorted in the order they were injected.")
 
         # check all data samples are in info, and get first sample
-        in_data = np.isin(sample_information[self.injection_id], raw_data.columns)
+        in_data = np.isin(
+            sample_information[self.injection_id].tolist(), raw_data.columns.tolist()
+        )
         if not (in_data).any():
             raise ValueError(
                 "There are no overlapping samples in your sample information and "
@@ -173,7 +175,8 @@ class DriftCorrection:  # pylint: disable=too-many-instance-attributes
 
         # check there aren't 'used' samples missing from data sheet
         missing = ~np.isin(
-            sample_information.loc[~will_drop, self.injection_id], samples
+            sample_information.loc[~will_drop, self.injection_id].tolist(),
+            samples.tolist(),
         )
         if missing.any():
             raise ValueError(
